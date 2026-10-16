@@ -102,6 +102,23 @@ def line_history(
     return parse_log(proc.stdout)
 
 
+def parse_target(target: str, root: str | Path, base: str | Path | None = None) -> tuple[str, int]:
+    """Turn ``PATH:LINE`` into a root-relative ``(path, line)``.
+
+    A relative PATH is resolved against ``base`` (default: the current directory).
+
+    Raises ValueError with a user-facing message.
+    """
+    path, _, line = target.rpartition(":")
+    if not path or not line.isdigit():
+        raise ValueError(f"expected PATH:LINE, e.g. app/checkout.py:42, got {target!r}")
+    try:
+        rel = (Path(base or Path.cwd()) / path).resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        raise ValueError(f"{path} is outside the project root {root}") from None
+    return rel.as_posix(), int(line)
+
+
 def site_history(
     root: str | Path,
     path: str,

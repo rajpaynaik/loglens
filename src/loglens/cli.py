@@ -1,4 +1,4 @@
-"""Command-line interface: ``loglens index | lint | counts | spikes | history | serve``."""
+"""Command-line interface: ``loglens index | lint | counts | spikes | history | serve | mcp``."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from pathlib import Path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
-from .git import site_history
+from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
-from .lint import RULES, describe_trend, is_spike, lint_paths, lint_volume
+from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
 
 
 def _sites(cfg: Config, path: str | None):
@@ -91,9 +91,7 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
     current = TimeRange.last(hours)
     now = backend.count_by_line(sites, current)
     before = backend.count_by_line(sites, current.previous())
-    spikes = [(sid, n, before.get(sid, 0)) for sid, n in now.items()]
-    spikes = [t for t in spikes if is_spike(t[1], t[2], cfg.lint)]
-    spikes.sort(key=lambda t: t[1] / max(t[2], 1), reverse=True)
+    spikes = find_spikes(now, before, cfg.lint)
     by_id = {s.id: s for s in sites}
     for i, (sid, n, prev) in enumerate(spikes):
         site = by_id[sid]
@@ -119,14 +117,11 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_history(args: argparse.Namespace, cfg: Config) -> int:
-    path, _, line = args.target.rpartition(":")
-    if not path or not line.isdigit():
-        sys.exit("loglens: expected PATH:LINE, e.g. app/checkout.py:42")
     try:
-        rel = Path(path).resolve().relative_to(cfg.root)
-    except ValueError:
-        sys.exit(f"loglens: {path} is outside the project root {cfg.root}")
-    commits = site_history(cfg.root, rel.as_posix(), int(line), max_count=args.max)
+        path, line = parse_target(args.target, cfg.root)
+    except ValueError as exc:
+        sys.exit(f"loglens: {exc}")
+    commits = site_history(cfg.root, path, line, max_count=args.max)
     for c in commits:
         print(c.format())
     if not commits:
@@ -148,6 +143,15 @@ def cmd_serve(args: argparse.Namespace, cfg: Config) -> int:
     except ImportError:
         sys.exit("loglens: the language server needs extra deps: pip install 'loglens[lsp]'")
     serve()
+    return 0
+
+
+def cmd_mcp(args: argparse.Namespace, cfg: Config) -> int:
+    try:
+        from .mcp_server import serve
+    except ImportError:
+        sys.exit("loglens: the MCP server needs extra deps: pip install 'loglens[mcp]'")
+    serve(cfg)
     return 0
 
 
@@ -188,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("rules", help="list lint rules").set_defaults(func=cmd_rules)
     sub.add_parser("serve", help="run the language server on stdio").set_defaults(func=cmd_serve)
+    sub.add_parser("mcp", help="run the MCP server on stdio").set_defaults(func=cmd_mcp)
 
     args = parser.parse_args(argv)
     cfg = load_config(args.config_dir)

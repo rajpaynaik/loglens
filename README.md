@@ -18,6 +18,7 @@ It doesn't depend on any one vendor: Loki today, with OpenSearch and CloudWatch 
 
 - **Log index**: finds every `logger.*` / `logging.*` call using `ast`, including `%`-style, f-string and `.format()` templates.
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
+- **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
 
@@ -36,7 +37,8 @@ It doesn't depend on any one vendor: Loki today, with OpenSearch and CloudWatch 
 ## Install
 
 ```bash
-pip install "loglens[lsp]"        # from source for now: pip install -e ".[dev]"
+pip install "loglens[lsp]"        # editor support; add ,mcp for the MCP server
+                                  # from source for now: pip install -e ".[dev]"
 ```
 
 ## Quick start
@@ -50,6 +52,7 @@ loglens lint --volume      # static + volume rules
 loglens spikes             # lines that jumped vs the previous window, with suspect commits
 loglens history app/checkout.py:7   # commits that touched the code around a log line
 loglens serve              # language server on stdio (used by editors)
+loglens mcp                # MCP server on stdio (used by AI assistants)
 ```
 
 ## Configuration
@@ -74,6 +77,27 @@ noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
 ```
+
+## MCP server
+
+`loglens mcp` exposes loglens to AI assistants over the [Model Context Protocol](https://modelcontextprotocol.io).
+Install it with `pip install "loglens[mcp]"`, then register it. For Claude Code:
+
+```bash
+claude mcp add loglens -- loglens --config-dir /path/to/your/project mcp
+```
+
+Other clients take the same command (`loglens --config-dir <project> mcp`) in their MCP config.
+All tools are read-only:
+
+| Tool | What it answers |
+|------|-----------------|
+| `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
+| `log_history` | Which commits changed the function around `app/checkout.py:42`? |
+| `log_counts` | Which log calls are the loudest in production? |
+| `lint` | Which log calls have quality problems (optionally including volume rules)? |
+| `list_log_calls` | Where are the log calls, and what are their message templates? |
+| `list_rules` | What do the `LL…` codes mean? |
 
 ## How log → line matching works
 
@@ -100,7 +124,7 @@ refer to `HEAD`, so uncommitted edits above the function can shift the range.
 ```
 VS Code / JetBrains / Neovim (thin client)
         │  Language Server Protocol
-Python core (pygls)  ── also exposed as an MCP server (planned)
+Python core (pygls)  ── also exposed as an MCP server (mcp_server.py)
   ├── index.py     → finds every log call in code (ast)
   ├── matching.py  → production log → source line
   ├── backends/    → file | Loki | OpenSearch* | CloudWatch*
@@ -123,7 +147,7 @@ class LogBackend(ABC):
 - [x] **v0.1**: log index, Loki + file backends, code-lens counts, quality linter, CLI
 - [ ] VS Code extension on the Marketplace ([`editors/vscode`](editors/vscode))
 - [x] Git correlation: when a line spikes, show the commits that touched it
-- [ ] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
+- [x] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
 - [ ] OpenSearch and CloudWatch Logs backends
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [ ] Server-side aggregation for Loki (`sum by (lineno)`) for large volumes

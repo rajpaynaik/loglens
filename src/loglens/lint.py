@@ -69,6 +69,16 @@ def is_spike(current: int, previous: int, cfg: LintConfig) -> bool:
     return current >= cfg.spike_min_count and current >= cfg.spike_ratio * max(previous, 1)
 
 
+def find_spikes(
+    current: Mapping[str, int], previous: Mapping[str, int], cfg: LintConfig
+) -> list[tuple[str, int, int]]:
+    """``(site_id, current, previous)`` for every spiking line, biggest jump first."""
+    spikes = [(sid, n, previous.get(sid, 0)) for sid, n in current.items()]
+    spikes = [t for t in spikes if is_spike(t[1], t[2], cfg)]
+    spikes.sort(key=lambda t: t[1] / max(t[2], 1), reverse=True)
+    return spikes
+
+
 def describe_trend(current: int, previous: int) -> str:
     """``"8.0x"`` or ``"new"`` (no emits in the previous window)."""
     return f"{current / previous:.1f}x" if previous else "new"

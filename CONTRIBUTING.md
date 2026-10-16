@@ -22,6 +22,7 @@ Try it against the demo: `cd examples/demo_app && loglens lint --volume && logle
 | `src/loglens/lint.py` | lint rules (`LL0xx` static, `LL1xx` volume) |
 | `src/loglens/git.py` | `git log -L` history for the function around a log call |
 | `src/loglens/server.py` | language server (pygls) |
+| `src/loglens/mcp_server.py` | MCP server for AI assistants (`loglens mcp`) |
 | `editors/vscode/` | thin VS Code client |
 
 ## Good first contributions
