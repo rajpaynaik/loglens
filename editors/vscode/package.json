@@ -1,0 +1,39 @@
+{
+  "name": "loglens",
+  "displayName": "loglens",
+  "description": "Production log counts and log-quality checks inline, next to your log calls.",
+  "version": "0.1.0",
+  "publisher": "rajpaynaik",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/rajpaynaik/loglens" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Linters", "Other"],
+  "activationEvents": ["onLanguage:python"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "loglens",
+      "properties": {
+        "loglens.serverCommand": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["loglens", "serve"],
+          "description": "Command that starts the loglens language server. Install it with: pip install 'loglens[lsp]'"
+        }
+      }
+    },
+    "commands": [{ "command": "loglens.restart", "title": "loglens: Restart server" }]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "package": "vsce package"
+  },
+  "dependencies": { "vscode-languageclient": "^9.0.1" },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  }
+}

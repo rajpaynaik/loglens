@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loglens"
+version = "0.1.0.dev0"
+description = "See production log volume and log-quality issues inline, next to the log calls in your code."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Raj Paynaik", email = "rajpaynaik18@gmail.com" }]
+keywords = ["logging", "observability", "lsp", "linter", "loki", "vscode"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Debuggers",
+  "Topic :: System :: Logging",
+]
+dependencies = [
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+lsp = ["pygls>=2.0,<3"]
+dev = ["pygls>=2.0,<3", "pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+loglens = "loglens.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rajpaynaik/loglens"
+Issues = "https://github.com/rajpaynaik/loglens/issues"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

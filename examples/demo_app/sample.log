@@ -1,0 +1,6 @@
+{"timestamp": "2026-10-14T10:00:00Z", "level": "INFO", "message": "charging order 41 for 1999 cents", "pathname": "/srv/app/checkout.py", "lineno": 7}
+{"timestamp": "2026-10-14T10:00:01Z", "level": "INFO", "message": "reserving item SKU-1", "pathname": "/srv/app/checkout.py", "lineno": 15}
+{"timestamp": "2026-10-14T10:00:01Z", "level": "INFO", "message": "reserving item SKU-2", "pathname": "/srv/app/checkout.py", "lineno": 15}
+{"timestamp": "2026-10-14T10:00:01Z", "level": "INFO", "message": "reserving item SKU-3", "pathname": "/srv/app/checkout.py", "lineno": 15}
+2026-10-14 10:00:05 ERROR app.checkout payment failed for order 42: card declined
+2026-10-14 10:00:06 INFO app.checkout charging order 43 for 500 cents

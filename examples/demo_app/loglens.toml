@@ -1,0 +1,9 @@
+window_hours = 87600  # sample log is old; use 24 for real backends
+
+[backend]
+type = "file"
+path = "sample.log"
+
+[lint]
+required_fields = []
+noisy_threshold = 3

@@ -1,0 +1,33 @@
+from loglens.backends import parse_line
+from loglens.index import index_source
+from loglens.matching import Matcher
+
+SRC = """
+logger.info("user %s logged in from %s", uid, ip)
+logger.info("%s", anything)
+logger.warning(f"disk {pct}% full")
+"""
+
+
+def matcher():
+    return Matcher(index_source(SRC, "svc/auth.py"))
+
+
+def test_structured_match_uses_file_and_line():
+    rec = parse_line('{"message": "whatever", "pathname": "/deploy/svc/auth.py", "lineno": 3}')
+    assert matcher().match(rec).line == 3
+
+
+def test_template_match_prefers_most_specific():
+    rec = parse_line("2026-01-01 INFO user 7 logged in from 10.0.0.1")
+    assert matcher().match(rec).line == 2
+
+
+def test_fstring_with_percent():
+    rec = parse_line("WARNING disk 93% full")
+    assert matcher().match(rec).line == 4
+
+
+def test_bare_placeholder_template_never_matches():
+    rec = parse_line("totally unrelated")
+    assert matcher().match(rec) is None

@@ -1,0 +1,36 @@
+"""Read logs from a local file (plain text or JSON lines). Handy for demos, tests and CI."""
+
+from __future__ import annotations
+
+from datetime import timezone
+from pathlib import Path
+
+from ..models import LogRecord
+from .base import LogBackend, TimeRange, parse_line
+
+
+class FileBackend(LogBackend):
+    name = "file"
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def query_logs(
+        self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
+    ) -> list[LogRecord]:
+        out: list[LogRecord] = []
+        with self.path.open(encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                if not raw.strip() or (contains and contains not in raw):
+                    continue
+                record = parse_line(raw)
+                ts = record.timestamp
+                if ts is not None:
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if not (time_range.start <= ts <= time_range.end):
+                        continue
+                out.append(record)
+                if len(out) >= limit:
+                    break
+        return out
