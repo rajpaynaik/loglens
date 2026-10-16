@@ -1,15 +1,36 @@
 from .base import LogBackend, TimeRange, parse_line
+from .cloudwatch import CloudWatchBackend
 from .file import FileBackend
 from .loki import LokiBackend
+from .opensearch import OpenSearchBackend
 
-__all__ = ["FileBackend", "LogBackend", "LokiBackend", "TimeRange", "parse_line", "from_config"]
+__all__ = [
+    "CloudWatchBackend",
+    "FileBackend",
+    "LogBackend",
+    "LokiBackend",
+    "OpenSearchBackend",
+    "TimeRange",
+    "parse_line",
+    "from_config",
+]
 
 
 def from_config(cfg: dict) -> LogBackend | None:
-    """Build a backend from the ``[backend]`` table of the loglens config."""
+    """Build a backend from the ``[backend]`` table of the loglens config.
+
+    Raises ValueError for a bad config and RuntimeError if the backend's extra isn't installed.
+    """
     kind = cfg.get("type")
     if not kind:
         return None
+    try:
+        return _build(kind, cfg)
+    except KeyError as exc:
+        raise ValueError(f"backend type {kind!r} needs {exc.args[0]!r}") from None
+
+
+def _build(kind: str, cfg: dict) -> LogBackend:
     if kind == "file":
         return FileBackend(cfg["path"])
     if kind == "loki":
@@ -20,4 +41,26 @@ def from_config(cfg: dict) -> LogBackend | None:
             password=cfg.get("password"),
             tenant_id=cfg.get("tenant_id"),
         )
-    raise ValueError(f"unknown backend type: {kind!r} (supported: file, loki)")
+    if kind in ("opensearch", "elasticsearch"):
+        return OpenSearchBackend(
+            cfg["url"],
+            cfg["index"],
+            query=cfg.get("query"),
+            timestamp_field=cfg.get("timestamp_field", "@timestamp"),
+            message_field=cfg.get("message_field", "message"),
+            username=cfg.get("username"),
+            password=cfg.get("password"),
+            api_key=cfg.get("api_key"),
+        )
+    if kind == "cloudwatch":
+        return CloudWatchBackend(
+            cfg["log_group"],
+            region=cfg.get("region"),
+            profile=cfg.get("profile"),
+            filter_pattern=cfg.get("filter_pattern"),
+            log_stream_prefix=cfg.get("log_stream_prefix"),
+        )
+    raise ValueError(
+        f"unknown backend type: {kind!r} (supported: file, loki, opensearch, elasticsearch, "
+        "cloudwatch)"
+    )

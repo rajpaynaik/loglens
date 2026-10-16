@@ -22,7 +22,10 @@ def _sites(cfg: Config, path: str | None):
 
 
 def _backend_or_exit(cfg: Config):
-    backend = from_config(cfg.backend)
+    try:
+        backend = from_config(cfg.backend)
+    except (ValueError, RuntimeError) as exc:
+        sys.exit(f"loglens: bad [backend] config: {exc}")
     if backend is None:
         sys.exit("loglens: no [backend] configured in loglens.toml or [tool.loglens]")
     return backend

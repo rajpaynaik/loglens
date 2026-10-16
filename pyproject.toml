@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Raj Paynaik", email = "rajpaynaik18@gmail.com" }]
-keywords = ["logging", "observability", "lsp", "linter", "loki", "vscode", "mcp"]
+keywords = ["logging", "observability", "lsp", "linter", "loki", "opensearch", "elasticsearch", "cloudwatch", "vscode", "mcp"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 lsp = ["pygls>=2.0,<3"]
 mcp = ["mcp>=2.3,<3"]
+cloudwatch = ["boto3>=1.34"]
 dev = ["pygls>=2.0,<3", "mcp>=2.3,<3", "pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

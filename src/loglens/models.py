@@ -65,7 +65,15 @@ class LogRecord:
 
     @property
     def source_file(self) -> str | None:
-        for key in ("pathname", "filename", "file", "code.filepath", "source_file"):
+        # Python logging, OpenTelemetry (code.*) and Elastic Common Schema (log.origin.*)
+        for key in (
+            "pathname",
+            "filename",
+            "file",
+            "code.filepath",
+            "log.origin.file.name",
+            "source_file",
+        ):
             value = self.fields.get(key)
             if value:
                 return str(value)
@@ -73,7 +81,7 @@ class LogRecord:
 
     @property
     def source_line(self) -> int | None:
-        for key in ("lineno", "line", "code.lineno", "source_line"):
+        for key in ("lineno", "line", "code.lineno", "log.origin.file.line", "source_line"):
             value = self.fields.get(key)
             if value is not None:
                 try:

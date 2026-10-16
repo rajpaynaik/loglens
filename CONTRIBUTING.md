@@ -27,7 +27,7 @@ Try it against the demo: `cd examples/demo_app && loglens lint --volume && logle
 
 ## Good first contributions
 
-- **A new backend** (OpenSearch, CloudWatch Logs, Elasticsearch, Datadog). Subclass `LogBackend`,
+- **A new backend** (Datadog, Splunk, Google Cloud Logging, Azure Monitor). Subclass `LogBackend`,
   implement `query_logs`, register it in `backends/__init__.py:from_config`, and add a test that
   parses a recorded API response (see `test_loki_parse_response_merges_labels`).
 - **A new lint rule.** Add it to `RULES` and `check_call` in `lint.py`, with tests showing both a

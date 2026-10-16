@@ -10,7 +10,7 @@ logger.warning("legacy discount path used for order %s", order.id)     # no logs
 
 loglens indexes every log call in your code, maps production logs back to the exact line that emitted them, and shows the result inline through the Language Server Protocol, so it works in VS Code, Neovim, JetBrains (LSP plugin), Helix, Zed and others.
 
-It doesn't depend on any one vendor: Loki today, with OpenSearch and CloudWatch adapters on the roadmap. Each backend is one small Python class.
+It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudWatch Logs are supported. Each backend is one small Python class.
 
 > Status: **pre-alpha**. Python codebases only, for now. Feedback and contributors welcome.
 
@@ -63,7 +63,7 @@ loglens mcp                # MCP server on stdio (used by AI assistants)
 window_hours = 24
 
 [backend]
-type = "loki"                       # or "file"
+type = "loki"                       # or "opensearch", "elasticsearch", "cloudwatch", "file"
 url = "http://localhost:3100"
 selector = '{app="checkout"}'
 username = "me"
@@ -76,6 +76,29 @@ required_fields = ["trace_id"]      # enables LL006
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
+```
+
+Other backends:
+
+```toml
+[backend]                           # OpenSearch or Elasticsearch (same _search API)
+type = "opensearch"
+url = "https://search.internal:9200"
+index = "logs-checkout-*"
+query = 'service.name:checkout'     # optional Lucene query_string
+# timestamp_field = "@timestamp"    # defaults
+# message_field = "message"
+api_key_env = "OPENSEARCH_API_KEY"  # or username + password_env
+```
+
+```toml
+[backend]                           # AWS CloudWatch Logs: pip install "loglens[cloudwatch]"
+type = "cloudwatch"
+log_group = "/ecs/checkout"
+region = "us-east-1"
+# profile = "prod"                  # credentials come from the usual AWS chain
+# filter_pattern = "INFO"           # CloudWatch filter syntax
+# log_stream_prefix = "web-"
 ```
 
 ## MCP server
@@ -103,7 +126,7 @@ All tools are read-only:
 
 Matching production logs to source lines is the hard part. loglens tries two methods, most reliable first:
 
-1. **Structured fields.** If your logs carry `pathname`/`filename` + `lineno`, matching is exact. Python's `logging` provides these for free; for example with [python-json-logger](https://github.com/nhairs/python-json-logger):
+1. **Structured fields.** If your logs carry `pathname`/`filename` + `lineno` (or the ECS `log.origin.file.*` / OpenTelemetry `code.*` equivalents), matching is exact. Python's `logging` provides these for free; for example with [python-json-logger](https://github.com/nhairs/python-json-logger):
    ```python
    JsonFormatter("%(asctime)s %(levelname)s %(message)s %(pathname)s %(lineno)d")
    ```
@@ -127,7 +150,7 @@ VS Code / JetBrains / Neovim (thin client)
 Python core (pygls)  ── also exposed as an MCP server (mcp_server.py)
   ├── index.py     → finds every log call in code (ast)
   ├── matching.py  → production log → source line
-  ├── backends/    → file | Loki | OpenSearch* | CloudWatch*
+  ├── backends/    → file | Loki | OpenSearch/Elasticsearch | CloudWatch
   ├── lint.py      → noise, dead logs, missing IDs, PII
   ├── kafka*       → consumer lag, DLQ, errors per topic
   └── git.py       → commits that touched a spiking line (git log -L)
@@ -148,7 +171,7 @@ class LogBackend(ABC):
 - [ ] VS Code extension on the Marketplace ([`editors/vscode`](editors/vscode))
 - [x] Git correlation: when a line spikes, show the commits that touched it
 - [x] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
-- [ ] OpenSearch and CloudWatch Logs backends
+- [x] OpenSearch and CloudWatch Logs backends
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [ ] Server-side aggregation for Loki (`sum by (lineno)`) for large volumes
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino

@@ -49,7 +49,10 @@ def build_server(cfg: Config) -> MCPServer:
         return index_project(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
 
     def backend() -> LogBackend:
-        b = from_config(cfg.backend)
+        try:
+            b = from_config(cfg.backend)
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(f"bad [backend] config: {exc}") from exc
         if b is None:
             raise ToolError("no [backend] configured in loglens.toml or [tool.loglens]")
         return b

@@ -93,7 +93,15 @@ class LoglensServer(LanguageServer):
 
     def refresh_counts_forever(self) -> None:
         assert self.cfg is not None
-        backend = from_config(self.cfg.backend)
+        try:
+            backend = from_config(self.cfg.backend)
+        except (ValueError, RuntimeError) as exc:
+            self.window_show_message(
+                types.ShowMessageParams(
+                    type=types.MessageType.Error, message=f"loglens: bad [backend] config: {exc}"
+                )
+            )
+            return
         if backend is None:
             return
         while not self._stop.is_set():
