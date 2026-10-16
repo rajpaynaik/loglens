@@ -24,6 +24,7 @@ RULES: dict[str, str] = {
     "LL006": "log call missing required context field",
     "LL100": "noisy log line",
     "LL101": "log line never emitted",
+    "LL102": "log line spiked compared with the previous window",
 }
 
 DEFAULT_PII_PATTERN = (
@@ -40,6 +41,8 @@ class LintConfig:
     # LL006 is off unless you list fields, e.g. ["trace_id"]
     required_fields: list[str] = field(default_factory=list)
     noisy_threshold: int = 100_000  # LL100: emits per window
+    spike_ratio: float = 5.0  # LL102: current window >= ratio x previous window ...
+    spike_min_count: int = 1_000  # ... and at least this many emits
     dead_levels: set[str] = field(default_factory=lambda: {"warning", "error", "critical"})
 
     def enabled(self, code: str) -> bool:
@@ -54,9 +57,21 @@ class LintConfig:
         cfg.pii_pattern = data.get("pii_pattern", cfg.pii_pattern)
         cfg.required_fields = list(data.get("required_fields", []))
         cfg.noisy_threshold = int(data.get("noisy_threshold", cfg.noisy_threshold))
+        cfg.spike_ratio = float(data.get("spike_ratio", cfg.spike_ratio))
+        cfg.spike_min_count = int(data.get("spike_min_count", cfg.spike_min_count))
         if "dead_levels" in data:
             cfg.dead_levels = set(data["dead_levels"])
         return cfg
+
+
+def is_spike(current: int, previous: int, cfg: LintConfig) -> bool:
+    """True if a line went from ``previous`` to ``current`` emits fast enough to flag."""
+    return current >= cfg.spike_min_count and current >= cfg.spike_ratio * max(previous, 1)
+
+
+def describe_trend(current: int, previous: int) -> str:
+    """``"8.0x"`` or ``"new"`` (no emits in the previous window)."""
+    return f"{current / previous:.1f}x" if previous else "new"
 
 
 def _diag(site: LogSite, code: str, message: str, severity: str = "warning") -> Diagnostic:
@@ -219,8 +234,12 @@ def lint_volume(
     counts: Mapping[str, int],
     cfg: LintConfig | None = None,
     window: str = "24h",
+    previous: Mapping[str, int] | None = None,
 ) -> list[Diagnostic]:
-    """Rules that need production counts from a backend."""
+    """Rules that need production counts from a backend.
+
+    ``previous`` holds counts for the window just before the current one; LL102 needs it.
+    """
     cfg = cfg or LintConfig()
     out: list[Diagnostic] = []
     for site in sites:
@@ -247,4 +266,16 @@ def lint_volume(
                     severity="hint",
                 )
             )
+        if cfg.enabled("LL102") and previous is not None:
+            before = previous.get(site.id, 0)
+            if is_spike(n, before, cfg):
+                out.append(
+                    _diag(
+                        site,
+                        "LL102",
+                        f"spiked to {n:,} in the last {window}, up from {before:,} the window "
+                        f"before; see recent changes: loglens history {site.id}",
+                        severity="info",
+                    )
+                )
     return out

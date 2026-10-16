@@ -23,6 +23,10 @@ class TimeRange:
         end = datetime.now(timezone.utc)
         return cls(start=end - timedelta(hours=hours), end=end)
 
+    def previous(self) -> TimeRange:
+        """The range of the same length that ends where this one starts."""
+        return TimeRange(start=self.start - (self.end - self.start), end=self.start)
+
 
 class LogBackend(ABC):
     """Adapter for a log store (Loki, OpenSearch, CloudWatch, a local file, ...)."""

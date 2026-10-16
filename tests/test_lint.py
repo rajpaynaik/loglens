@@ -51,3 +51,17 @@ def test_volume_rules():
     sites = index_source('logger.info("a")\nlogger.error("b")\n', "m.py")
     diags = lint_volume(sites, {"m.py:1": 500}, LintConfig(noisy_threshold=100))
     assert [(d.line, d.code) for d in diags] == [(1, "LL100"), (2, "LL101")]
+
+
+def test_spike_rule():
+    sites = index_source('logger.info("a")\nlogger.info("b")\nlogger.info("c")\n', "m.py")
+    cfg = LintConfig(spike_ratio=5, spike_min_count=100)
+    now = {"m.py:1": 1000, "m.py:2": 1000, "m.py:3": 50}
+    before = {"m.py:1": 100, "m.py:2": 900, "m.py:3": 0}
+    spikes = [d for d in lint_volume(sites, now, cfg, previous=before) if d.code == "LL102"]
+    assert [d.line for d in spikes] == [1]  # 10x; line 2 is flat, line 3 is below min_count
+    # new lines count as spikes once they pass min_count
+    diags = lint_volume(sites, {"m.py:3": 500}, cfg, previous={})
+    assert [d.line for d in diags if d.code == "LL102"] == [3]
+    # without previous counts the rule can't run
+    assert not any(d.code == "LL102" for d in lint_volume(sites, now, cfg))

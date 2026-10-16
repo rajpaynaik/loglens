@@ -17,7 +17,8 @@ It doesn't depend on any one vendor: Loki today, with OpenSearch and CloudWatch 
 ## Features
 
 - **Log index**: finds every `logger.*` / `logging.*` call using `ast`, including `%`-style, f-string and `.format()` templates.
-- **Production counts per line**: code lens above each log call (`1.2M in 24h`).
+- **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
+- **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
 
 | Code  | Rule |
@@ -30,6 +31,7 @@ It doesn't depend on any one vendor: Loki today, with OpenSearch and CloudWatch 
 | LL006 | Missing required context field in `extra=` (e.g. `trace_id`), opt-in |
 | LL100 | Noisy line: emits more than N times per window *(needs a backend)* |
 | LL101 | Warning/error line never seen in production *(needs a backend)* |
+| LL102 | Line spiked: ≥ `spike_ratio`× the previous window and ≥ `spike_min_count` emits *(needs a backend)* |
 
 ## Install
 
@@ -45,6 +47,8 @@ loglens index              # list every log call
 loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
 loglens counts             # production counts per line, from the configured backend
 loglens lint --volume      # static + volume rules
+loglens spikes             # lines that jumped vs the previous window, with suspect commits
+loglens history app/checkout.py:7   # commits that touched the code around a log line
 loglens serve              # language server on stdio (used by editors)
 ```
 
@@ -67,6 +71,8 @@ password_env = "LOKI_PASSWORD"      # any key ending in _env is read from the en
 ignore = ["LL004"]
 required_fields = ["trace_id"]      # enables LL006
 noisy_threshold = 100000
+spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
+spike_min_count = 1000              # ... and at least this many emits
 ```
 
 ## How log → line matching works
@@ -81,6 +87,14 @@ Matching production logs to source lines is the hard part. loglens tries two met
 
 Adding `pathname` + `lineno` to your log format is the biggest accuracy upgrade you can make.
 
+## How spikes map to commits
+
+Each refresh fetches counts for the current window and the one just before it. A line whose
+count grew by `spike_ratio` (and passed `spike_min_count`) is a spike. loglens then runs
+`git log -L` over the **whole function** that contains the log call, because a line usually
+spikes when its callers or surrounding logic change, not the log call itself. Line numbers
+refer to `HEAD`, so uncommitted edits above the function can shift the range.
+
 ## Architecture
 
 ```
@@ -92,7 +106,7 @@ Python core (pygls)  ── also exposed as an MCP server (planned)
   ├── backends/    → file | Loki | OpenSearch* | CloudWatch*
   ├── lint.py      → noise, dead logs, missing IDs, PII
   ├── kafka*       → consumer lag, DLQ, errors per topic
-  └── git*         → commits that touched a spiking line (git log -L)
+  └── git.py       → commits that touched a spiking line (git log -L)
                                                    * = roadmap
 ```
 
@@ -108,7 +122,7 @@ class LogBackend(ABC):
 
 - [x] **v0.1**: log index, Loki + file backends, code-lens counts, quality linter, CLI
 - [ ] VS Code extension on the Marketplace ([`editors/vscode`](editors/vscode))
-- [ ] Git correlation: when a line spikes, show the commits that touched it
+- [x] Git correlation: when a line spikes, show the commits that touched it
 - [ ] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
 - [ ] OpenSearch and CloudWatch Logs backends
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic

@@ -1,4 +1,4 @@
-"""Command-line interface: ``loglens index | lint | counts | serve``."""
+"""Command-line interface: ``loglens index | lint | counts | spikes | history | serve``."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from pathlib import Path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .git import site_history
 from .index import DEFAULT_EXCLUDES, index_project
-from .lint import RULES, lint_paths, lint_volume
+from .lint import RULES, describe_trend, is_spike, lint_paths, lint_volume
 
 
 def _sites(cfg: Config, path: str | None):
@@ -44,8 +45,14 @@ def cmd_lint(args: argparse.Namespace, cfg: Config) -> int:
     if args.volume:
         backend = _backend_or_exit(cfg)
         sites = _sites(cfg, None)
-        counts = backend.count_by_line(sites, TimeRange.last(cfg.window_hours))
-        diags += lint_volume(sites, counts, cfg.lint, window=f"{cfg.window_hours:g}h")
+        current = TimeRange.last(cfg.window_hours)
+        counts = backend.count_by_line(sites, current)
+        previous = (
+            backend.count_by_line(sites, current.previous()) if cfg.lint.enabled("LL102") else None
+        )
+        diags += lint_volume(
+            sites, counts, cfg.lint, window=f"{cfg.window_hours:g}h", previous=previous
+        )
     diags.sort(key=lambda d: (d.path, d.line, d.code))
     if args.format == "json":
         json.dump([asdict(d) for d in diags], sys.stdout, indent=2)
@@ -70,6 +77,62 @@ def cmd_counts(args: argparse.Namespace, cfg: Config) -> int:
         print(f"{n:>10,}  {site_id:<50} {site.template!r}")
     if not ranked:
         print(f"no matching logs in the last {hours:g}h", file=sys.stderr)
+    return 0
+
+
+def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
+    backend = _backend_or_exit(cfg)
+    sites = _sites(cfg, None)  # site paths must be relative to the root for git
+    hours = args.hours or cfg.window_hours
+    if args.ratio is not None:
+        cfg.lint.spike_ratio = args.ratio
+    if args.min_count is not None:
+        cfg.lint.spike_min_count = args.min_count
+    current = TimeRange.last(hours)
+    now = backend.count_by_line(sites, current)
+    before = backend.count_by_line(sites, current.previous())
+    spikes = [(sid, n, before.get(sid, 0)) for sid, n in now.items()]
+    spikes = [t for t in spikes if is_spike(t[1], t[2], cfg.lint)]
+    spikes.sort(key=lambda t: t[1] / max(t[2], 1), reverse=True)
+    by_id = {s.id: s for s in sites}
+    for i, (sid, n, prev) in enumerate(spikes):
+        site = by_id[sid]
+        if i:
+            print()
+        print(f"{sid}  {prev:,} -> {n:,} ({describe_trend(n, prev)})  {site.template!r}")
+        if args.commits:
+            # Commits since the start of the previous window are the likely causes.
+            commits = site_history(
+                cfg.root,
+                site.path,
+                site.line,
+                since=current.previous().start,
+                max_count=args.commits,
+            )
+            for c in commits:
+                print(f"    {c.format()}")
+            if not commits:
+                print(f"    no commits touched this code in the last {2 * hours:g}h")
+    if not spikes:
+        print(f"no spikes in the last {hours:g}h vs the {hours:g}h before", file=sys.stderr)
+    return 0
+
+
+def cmd_history(args: argparse.Namespace, cfg: Config) -> int:
+    path, _, line = args.target.rpartition(":")
+    if not path or not line.isdigit():
+        sys.exit("loglens: expected PATH:LINE, e.g. app/checkout.py:42")
+    try:
+        rel = Path(path).resolve().relative_to(cfg.root)
+    except ValueError:
+        sys.exit(f"loglens: {path} is outside the project root {cfg.root}")
+    commits = site_history(cfg.root, rel.as_posix(), int(line), max_count=args.max)
+    for c in commits:
+        print(c.format())
+    if not commits:
+        print(
+            f"no git history for {args.target} (not a git repo, or not committed?)", file=sys.stderr
+        )
     return 0
 
 
@@ -110,6 +173,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--hours", type=float)
     p.add_argument("--top", type=int, default=20)
     p.set_defaults(func=cmd_counts)
+
+    p = sub.add_parser("spikes", help="lines that spiked vs the previous window, with commits")
+    p.add_argument("--hours", type=float)
+    p.add_argument("--ratio", type=float, help="minimum growth factor (default: lint.spike_ratio)")
+    p.add_argument("--min-count", type=int, help="minimum emits (default: lint.spike_min_count)")
+    p.add_argument("--commits", type=int, default=3, help="commits to show per line (0: none)")
+    p.set_defaults(func=cmd_spikes)
+
+    p = sub.add_parser("history", help="commits that touched the code around a log line")
+    p.add_argument("target", metavar="PATH:LINE")
+    p.add_argument("--max", type=int, default=10)
+    p.set_defaults(func=cmd_history)
 
     sub.add_parser("rules", help="list lint rules").set_defaults(func=cmd_rules)
     sub.add_parser("serve", help="run the language server on stdio").set_defaults(func=cmd_serve)

@@ -20,6 +20,7 @@ Try it against the demo: `cd examples/demo_app && loglens lint --volume && logle
 | `src/loglens/matching.py` | production `LogRecord` → `LogSite` |
 | `src/loglens/backends/` | one file per log store; implement `LogBackend.query_logs` |
 | `src/loglens/lint.py` | lint rules (`LL0xx` static, `LL1xx` volume) |
+| `src/loglens/git.py` | `git log -L` history for the function around a log call |
 | `src/loglens/server.py` | language server (pygls) |
 | `editors/vscode/` | thin VS Code client |
 
