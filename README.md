@@ -69,6 +69,8 @@ selector = '{app="checkout"}'
 username = "me"
 password_env = "LOKI_PASSWORD"      # any key ending in _env is read from the environment
 # tenant_id = "team-a"
+aggregate = true                    # let Loki count per file/line (see below); needs pathname + lineno
+# parser = "json"                   # or "logfmt": how Loki reads pathname/lineno from each line
 
 [lint]
 ignore = ["LL004"]
@@ -89,6 +91,9 @@ query = 'service.name:checkout'     # optional Lucene query_string
 # timestamp_field = "@timestamp"    # defaults
 # message_field = "message"
 api_key_env = "OPENSEARCH_API_KEY"  # or username + password_env
+aggregate = true                    # count per file/line with a composite aggregation
+# file_field = "log.origin.file.name"  # defaults (ECS); must be keyword/numeric fields,
+# line_field = "log.origin.file.line"  # e.g. "pathname.keyword" / "lineno"
 ```
 
 ```toml
@@ -134,6 +139,15 @@ Matching production logs to source lines is the hard part. loglens tries two met
 
 Adding `pathname` + `lineno` to your log format is the biggest accuracy upgrade you can make.
 
+### Counting at scale
+
+By default loglens downloads up to 5,000 log lines per window and matches them itself, so
+counts on busy services are capped and quieter lines can be missed entirely. With
+`aggregate = true` (Loki and OpenSearch/Elasticsearch), the log store does the counting
+per file and line, for example `sum by (pathname, lineno) (count_over_time(...))` in Loki,
+so counts are exact at any volume. Lines without file/line fields are still downloaded and
+matched by template, so only those are subject to the cap.
+
 ## How spikes map to commits
 
 Each refresh fetches counts for the current window and the one just before it. A line whose
@@ -173,7 +187,7 @@ class LogBackend(ABC):
 - [x] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
 - [x] OpenSearch and CloudWatch Logs backends
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
-- [ ] Server-side aggregation for Loki (`sum by (lineno)`) for large volumes
+- [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
 
 ## Contributing

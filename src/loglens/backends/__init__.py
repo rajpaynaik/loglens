@@ -40,6 +40,10 @@ def _build(kind: str, cfg: dict) -> LogBackend:
             username=cfg.get("username"),
             password=cfg.get("password"),
             tenant_id=cfg.get("tenant_id"),
+            aggregate=bool(cfg.get("aggregate", False)),
+            parser=cfg.get("parser", "json"),
+            file_label=cfg.get("file_label", "pathname"),
+            line_label=cfg.get("line_label", "lineno"),
         )
     if kind in ("opensearch", "elasticsearch"):
         return OpenSearchBackend(
@@ -51,6 +55,9 @@ def _build(kind: str, cfg: dict) -> LogBackend:
             username=cfg.get("username"),
             password=cfg.get("password"),
             api_key=cfg.get("api_key"),
+            aggregate=bool(cfg.get("aggregate", False)),
+            file_field=cfg.get("file_field", "log.origin.file.name"),
+            line_field=cfg.get("line_field", "log.origin.file.line"),
         )
     if kind == "cloudwatch":
         return CloudWatchBackend(

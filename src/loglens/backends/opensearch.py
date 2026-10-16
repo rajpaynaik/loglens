@@ -1,15 +1,23 @@
-"""OpenSearch / Elasticsearch adapter using the ``_search`` REST API (stdlib only)."""
+"""OpenSearch / Elasticsearch adapter using the ``_search`` REST API (stdlib only).
+
+With ``aggregate = true``, counts come from a composite aggregation over the file and line
+fields, so they aren't capped by how many documents loglens can download. Only documents
+without a line field are still fetched and matched by template.
+"""
 
 from __future__ import annotations
 
 import base64
 import json
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from ..models import LogRecord
-from .base import LogBackend, TimeRange, _parse_ts, parse_line
+from ..matching import Matcher
+from ..models import LogRecord, LogSite
+from .base import LogBackend, TimeRange, _parse_ts, parse_line, tally
+
+AGG_PAGE = 1000
 
 
 class OpenSearchBackend(LogBackend):
@@ -26,6 +34,9 @@ class OpenSearchBackend(LogBackend):
         username: str | None = None,
         password: str | None = None,
         api_key: str | None = None,
+        aggregate: bool = False,
+        file_field: str = "log.origin.file.name",
+        line_field: str = "log.origin.file.line",
         timeout: float = 30.0,
     ) -> None:
         self.url = url.rstrip("/")
@@ -33,6 +44,10 @@ class OpenSearchBackend(LogBackend):
         self.query = query  # optional Lucene query_string, e.g. 'service.name:checkout'
         self.timestamp_field = timestamp_field
         self.message_field = message_field
+        self.aggregate = aggregate
+        # Must be aggregatable (keyword / numeric), e.g. "pathname.keyword" for dynamic mappings
+        self.file_field = file_field
+        self.line_field = line_field
         self.timeout = timeout
         self.headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if api_key:
@@ -41,9 +56,7 @@ class OpenSearchBackend(LogBackend):
             token = base64.b64encode(f"{username}:{password}".encode()).decode()
             self.headers["Authorization"] = f"Basic {token}"
 
-    def build_query(
-        self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
-    ) -> dict[str, Any]:
+    def _filters(self, time_range: TimeRange, contains: str | None = None) -> list[dict]:
         filters: list[dict[str, Any]] = [
             {
                 "range": {
@@ -58,21 +71,75 @@ class OpenSearchBackend(LogBackend):
             filters.append({"query_string": {"query": self.query}})
         if contains:
             filters.append({"match_phrase": {self.message_field: contains}})
+        return filters
+
+    def build_query(
+        self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
+    ) -> dict[str, Any]:
         return {
             "size": limit,
             "sort": [{self.timestamp_field: {"order": "desc"}}],
-            "query": {"bool": {"filter": filters}},
+            "query": {"bool": {"filter": self._filters(time_range, contains)}},
         }
+
+    def build_count_query(self, time_range: TimeRange, after: dict | None = None) -> dict[str, Any]:
+        composite: dict[str, Any] = {
+            "size": AGG_PAGE,
+            "sources": [
+                {"file": {"terms": {"field": self.file_field}}},
+                {"line": {"terms": {"field": self.line_field}}},
+            ],
+        }
+        if after:
+            composite["after"] = after
+        return {
+            "size": 0,
+            "query": {"bool": {"filter": self._filters(time_range)}},
+            "aggs": {"by_line": {"composite": composite}},
+        }
+
+    def count_by_line(
+        self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000
+    ) -> dict[str, int]:
+        if not self.aggregate:
+            return super().count_by_line(sites, time_range, limit)
+        locations: dict[tuple[str, int], int] = {}
+        after = None
+        while True:
+            agg = self._search(self.build_count_query(time_range, after))["aggregations"]
+            buckets = agg["by_line"]["buckets"]
+            for b in buckets:
+                try:
+                    key = (str(b["key"]["file"]), int(b["key"]["line"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                locations[key] = locations.get(key, 0) + b["doc_count"]
+            after = agg["by_line"].get("after_key")
+            if not after or len(buckets) < AGG_PAGE:
+                break
+        # Documents missing the file or line field can only be matched by template.
+        located = [{"exists": {"field": f}} for f in (self.file_field, self.line_field)]
+        unlocated = self.build_query(time_range, limit=limit)
+        unlocated["query"]["bool"]["must_not"] = [{"bool": {"filter": located}}]
+        rest = self.parse_response(
+            self._search(unlocated), self.timestamp_field, self.message_field
+        )
+        return tally(Matcher(sites), locations, rest)
+
+    def _search(self, body: dict[str, Any]) -> dict:
+        req = urllib.request.Request(
+            f"{self.url}/{self.index}/_search",
+            data=json.dumps(body).encode(),
+            headers=self.headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.load(resp)
 
     def query_logs(
         self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
     ) -> list[LogRecord]:
-        body = json.dumps(self.build_query(time_range, contains, limit)).encode()
-        req = urllib.request.Request(
-            f"{self.url}/{self.index}/_search", data=body, headers=self.headers, method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            payload = json.load(resp)
+        payload = self._search(self.build_query(time_range, contains, limit))
         return self.parse_response(payload, self.timestamp_field, self.message_field)
 
     @staticmethod

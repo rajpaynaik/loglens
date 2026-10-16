@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -47,13 +47,25 @@ class LogBackend(ABC):
         The default implementation fetches records and matches them client-side. Backends
         that can aggregate server-side (e.g. on a ``lineno`` label) should override this.
         """
-        matcher = Matcher(sites)
-        counts: Counter[str] = Counter()
-        for record in self.query_logs(time_range, limit=limit):
-            site = matcher.match(record)
-            if site is not None:
-                counts[site.id] += 1
-        return dict(counts)
+        return tally(Matcher(sites), {}, self.query_logs(time_range, limit=limit))
+
+
+def tally(
+    matcher: Matcher,
+    locations: Mapping[tuple[str, int], int],
+    records: Iterable[LogRecord] = (),
+) -> dict[str, int]:
+    """Turn server-side ``{(file, line): count}`` plus raw records into ``{site.id: count}``."""
+    counts: Counter[str] = Counter()
+    for (src, line), n in locations.items():
+        site = matcher.match_location(src, line)
+        if site is not None:
+            counts[site.id] += n
+    for record in records:
+        site = matcher.match(record)
+        if site is not None:
+            counts[site.id] += 1
+    return dict(counts)
 
 
 def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:

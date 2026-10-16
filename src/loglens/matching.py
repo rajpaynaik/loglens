@@ -42,6 +42,10 @@ class Matcher:
         src, line = record.source_file, record.source_line
         if not src or line is None:
             return None
+        return self.match_location(src, line)
+
+    def match_location(self, src: str, line: int) -> LogSite | None:
+        """The site at ``line`` of the file whose path ends like ``src`` (any OS separators)."""
         src = src.replace("\\", "/")
         candidates = self._by_basename_line.get((src.rsplit("/", 1)[-1], line), [])
         if len(candidates) <= 1:

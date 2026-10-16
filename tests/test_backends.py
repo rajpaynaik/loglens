@@ -1,5 +1,7 @@
 import json
 import threading
+import urllib.parse
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from loglens.backends import (
     OpenSearchBackend,
     TimeRange,
     from_config,
+    opensearch,
 )
 from loglens.index import index_project
 
@@ -82,20 +85,29 @@ def test_opensearch_parse_response():
     assert recs[1].message == "hi" and recs[1].source_line == 3
 
 
-def test_opensearch_query_against_a_live_http_server():
-    seen = {}
+@contextmanager
+def stub_server(respond):
+    """Local HTTP server; ``respond(path, body) -> dict`` builds each JSON reply.
+
+    Yields ``(base_url, requests)``; requests collects ``(path, headers, body)``.
+    """
+    requests = []
 
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            seen["path"] = self.path
-            seen["auth"] = self.headers.get("Authorization")
-            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            out = json.dumps(OS_PAYLOAD).encode()
+        def _reply(self, body):
+            requests.append((self.path, dict(self.headers), body))
+            out = json.dumps(respond(self.path, body)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))
             self.end_headers()
             self.wfile.write(out)
+
+        def do_GET(self):
+            self._reply(None)
+
+        def do_POST(self):
+            self._reply(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
 
         def log_message(self, *args):
             pass
@@ -103,27 +115,122 @@ def test_opensearch_query_against_a_live_http_server():
     httpd = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
+        yield f"http://127.0.0.1:{httpd.server_port}/", requests
+    finally:
+        httpd.shutdown()
+
+
+def test_opensearch_query_against_a_live_http_server():
+    with stub_server(lambda path, body: OS_PAYLOAD) as (url, requests):
         b = from_config(
             {
                 "type": "elasticsearch",
-                "url": f"http://127.0.0.1:{httpd.server_port}/",
+                "url": url,
                 "index": "logs-*",
                 "query": "service.name:checkout",
                 "api_key": "k",
             }
         )
         recs = b.query_logs(TimeRange.last(1), contains="charging", limit=10)
-    finally:
-        httpd.shutdown()
     assert len(recs) == 2
-    assert seen["path"] == "/logs-*/_search" and seen["auth"] == "ApiKey k"
-    body = seen["body"]
+    ((path, headers, body),) = requests
+    assert path == "/logs-*/_search" and headers["Authorization"] == "ApiKey k"
     assert body["size"] == 10 and body["sort"] == [{"@timestamp": {"order": "desc"}}]
     filters = body["query"]["bool"]["filter"]
     assert "range" in filters[0] and filters[1] == {
         "query_string": {"query": "service.name:checkout"}
     }
     assert filters[2] == {"match_phrase": {"message": "charging"}}
+
+
+def test_opensearch_aggregate_pages_and_falls_back_for_unlocated_docs(monkeypatch):
+    monkeypatch.setattr(opensearch, "AGG_PAGE", 2)
+    pages = [
+        [("/srv/app/checkout.py", 7, 7000), ("/srv/app/checkout.py", 15, 40)],
+        [("checkout.py", 15, 2)],  # short page: the last one
+    ]
+
+    def respond(path, body):
+        if "aggs" in body:
+            buckets = [
+                {"key": {"file": f, "line": n}, "doc_count": c}
+                for f, n, c in pages[1 if body["aggs"]["by_line"]["composite"].get("after") else 0]
+            ]
+            return {"aggregations": {"by_line": {"buckets": buckets, "after_key": {"x": 1}}}}
+        # unlocated documents: matched by template
+        msg = "payment failed for order 1: declined"
+        return {"hits": {"hits": [_hit({"@timestamp": "2026-10-14T10:00:00Z", "message": msg})]}}
+
+    with stub_server(respond) as (url, requests):
+        b = OpenSearchBackend(url, "logs", aggregate=True)
+        counts = b.count_by_line(index_project(DEMO), TimeRange.last(1))
+    assert counts == {"app/checkout.py:7": 7000, "app/checkout.py:15": 42, "app/checkout.py:11": 1}
+    first, second, unlocated = (body for _, _, body in requests)
+    assert first["size"] == 0 and "after" not in first["aggs"]["by_line"]["composite"]
+    assert second["aggs"]["by_line"]["composite"]["after"] == {"x": 1}
+    sources = first["aggs"]["by_line"]["composite"]["sources"]
+    assert sources == [
+        {"file": {"terms": {"field": "log.origin.file.name"}}},
+        {"line": {"terms": {"field": "log.origin.file.line"}}},
+    ]
+    (not_located,) = unlocated["query"]["bool"]["must_not"]
+    assert not_located == {
+        "bool": {
+            "filter": [
+                {"exists": {"field": "log.origin.file.name"}},
+                {"exists": {"field": "log.origin.file.line"}},
+            ]
+        }
+    }
+
+
+def test_loki_aggregate_queries():
+    b = LokiBackend("http://loki:3100", '{app="x"}', aggregate=True)
+    r = TimeRange.last(0.5)
+    assert b.build_count_query(r) == (
+        'sum by (pathname, lineno) (count_over_time({app="x"} | json | __error__="" '
+        '| pathname!="" | lineno!="" [1800s]))'
+    )
+    assert b.build_unlocated_query() == (
+        '{app="x"} | json | __error__!="" or pathname="" or lineno="" '
+        "| drop __error__, __error_details__"
+    )
+    lf = LokiBackend("http://loki", "{a}", parser="logfmt", file_label="f", line_label="l")
+    assert "| logfmt |" in lf.build_count_query(r) and "sum by (f, l)" in lf.build_count_query(r)
+    with pytest.raises(ValueError, match="parser"):
+        LokiBackend("http://loki", "{a}", parser="regex")
+
+
+def test_loki_aggregate_counts_against_a_stub_server():
+    def respond(path, body):
+        if path.startswith("/loki/api/v1/query?"):
+            return {
+                "data": {
+                    "resultType": "vector",
+                    "result": [
+                        {
+                            "metric": {"pathname": "/srv/app/checkout.py", "lineno": "7"},
+                            "value": [1760000000, "7000"],
+                        },
+                        {
+                            "metric": {"pathname": "/srv/app/checkout.py", "lineno": "nope"},
+                            "value": [1760000000, "9"],
+                        },
+                    ],
+                }
+            }
+        line = "2026-10-14 10:00:05 ERROR payment failed for order 42: card declined"
+        return {"data": {"result": [{"stream": {}, "values": [["1760000000000000000", line]]}]}}
+
+    with stub_server(respond) as (url, requests):
+        b = from_config({"type": "loki", "url": url, "selector": '{app="x"}', "aggregate": True})
+        counts = b.count_by_line(index_project(DEMO), TimeRange.last(24))
+    assert counts == {"app/checkout.py:7": 7000, "app/checkout.py:11": 1}
+    metric_req, logs_req = (urllib.parse.urlparse(p) for p, _, _ in requests)
+    assert metric_req.path == "/loki/api/v1/query"
+    assert "sum by" in urllib.parse.parse_qs(metric_req.query)["query"][0]
+    assert logs_req.path == "/loki/api/v1/query_range"
+    assert '__error__!=""' in urllib.parse.parse_qs(logs_req.query)["query"][0]
 
 
 class FakeLogs:
