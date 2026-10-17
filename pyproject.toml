@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "logsite"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "See production log volume and log-quality issues inline, next to the log calls in your code."
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,12 @@ logsite = "logsite.cli:main"
 [project.urls]
 Homepage = "https://github.com/rajpaynaik/logsite"
 Issues = "https://github.com/rajpaynaik/logsite/issues"
+
+[tool.hatch.version]
+path = "src/logsite/__init__.py"  # the single source of the version
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/editors", "/.github"]  # the VS Code extension ships separately
 
 [tool.ruff]
 line-length = 100

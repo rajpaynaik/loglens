@@ -1,14 +1,49 @@
 {
   "name": "logsite",
   "displayName": "logsite",
-  "description": "Production log counts and log-quality checks inline, next to your log calls.",
+  "description": "See how often each log line fires in production, what it costs, and catch bad logging, right next to the logger.info(...) call.",
   "version": "0.1.0",
+  "preview": true,
   "publisher": "rajpaynaik",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/rajpaynaik/logsite" },
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Linters", "Other"],
-  "activationEvents": ["onLanguage:python"],
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#111827",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/rajpaynaik/logsite#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rajpaynaik/logsite"
+  },
+  "bugs": {
+    "url": "https://github.com/rajpaynaik/logsite/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "logging",
+    "logs",
+    "observability",
+    "python",
+    "structlog",
+    "loguru",
+    "loki",
+    "opensearch",
+    "elasticsearch",
+    "cloudwatch",
+    "lint"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "workspaceContains:logsite.toml"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
@@ -16,24 +51,42 @@
       "properties": {
         "logsite.serverCommand": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["logsite", "serve"],
-          "description": "Command that starts the logsite language server. Install it with: pip install 'logsite[lsp]'"
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Command that starts the logsite language server, e.g. `[\"/path/to/venv/bin/logsite\", \"serve\"]`. Leave empty to use the Python interpreter selected in VS Code (`python -m logsite serve`), then `logsite` on `PATH`. Install the server with `pip install \"logsite[lsp]\"`."
         }
       }
     },
-    "commands": [{ "command": "logsite.restart", "title": "logsite: Restart server" }]
+    "commands": [
+      {
+        "command": "logsite.restart",
+        "title": "Restart server",
+        "category": "logsite"
+      },
+      {
+        "command": "logsite.showOutput",
+        "title": "Show output",
+        "category": "logsite"
+      }
+    ]
   },
   "scripts": {
-    "compile": "tsc -p .",
-    "watch": "tsc -watch -p .",
+    "compile": "tsc -p . --noEmit && npm run bundle",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node20 --minify --sourcemap",
+    "watch": "npm run bundle -- --watch",
+    "vscode:prepublish": "npm run compile",
     "package": "vsce package"
   },
-  "dependencies": { "vscode-languageclient": "^9.0.1" },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.4.0"
   }
 }

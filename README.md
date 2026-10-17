@@ -47,7 +47,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 
 ```bash
 pip install "logsite[lsp]"        # editor support; add ,mcp for the MCP server
-                                  # from source for now: pip install -e ".[dev]"
+                                  # until the first release is on PyPI: pip install -e ".[dev]"
 ```
 
 ## Quick start
@@ -419,7 +419,7 @@ class LogBackend(ABC):
 ## Roadmap
 
 - [x] **v0.1**: log index, Loki + file backends, code-lens counts, quality linter, CLI
-- [ ] VS Code extension on the Marketplace ([`editors/vscode`](editors/vscode))
+- [ ] VS Code extension on the Marketplace and Open VSX ([`editors/vscode`](editors/vscode)): packaging and release workflow ready ([RELEASING.md](RELEASING.md)); waiting on the first `v0.1.0` tag
 - [x] Git correlation: when a line spikes, show the commits that touched it
 - [x] MCP server: let AI assistants ask "which log lines spiked after the last deploy?"
 - [x] OpenSearch and CloudWatch Logs backends

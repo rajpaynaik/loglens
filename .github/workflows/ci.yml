@@ -12,8 +12,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
@@ -21,15 +21,33 @@ jobs:
       - run: ruff format --check src tests
       - run: pytest -q
 
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: The wheel installs and runs
+        run: |
+          python -m venv /tmp/wheel && /tmp/wheel/bin/pip install "$(ls dist/*.whl)[lsp,mcp]"
+          /tmp/wheel/bin/logsite --version && /tmp/wheel/bin/python -m logsite rules > /dev/null
+
   vscode:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: editors/vscode
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
-      - run: npm install
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
       - run: npm run compile
+      - run: npx vsce package

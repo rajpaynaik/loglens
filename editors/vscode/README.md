@@ -1,14 +1,78 @@
 # logsite for VS Code
 
-Thin client for the [logsite](https://github.com/rajpaynaik/logsite) language server.
+**See how often each log line fires in production, what it costs, and catch bad logging, right next to the `logger.info(...)` call.**
 
-1. `pip install "logsite[lsp]"` (or set `logsite.serverCommand` to your venv's `logsite`)
-2. Add a `logsite.toml` to your project (see the main README)
-3. Open a Python file. Lint warnings appear right away; production counts appear as code lenses once the backend responds.
+```python
+logger.info("charging order %s for %d cents", order.id, total)   # 📈 1.2M in 24h · $42/mo
+logger.debug(f"card {card_number} charged")                      # ⚠ LL001 eager f-string · LL002 PII
+logger.warning("legacy discount path used for %s", order.id)     # no logs in 24h  ← dead code?
+```
+
+logsite maps production logs back to the exact line that wrote them, for Python's `logging`,
+**structlog** and **loguru**, reading from **Loki**, **OpenSearch / Elasticsearch**,
+**CloudWatch Logs** or a log file.
+
+> **Preview.** Python codebases only, for now.
+
+## Features
+
+- **Production counts above every log call**, with a `▲ 8.0x` marker when a line spiked.
+- **Cost per line**: `$/mo` next to the count once you set your price per GB.
+- **Hover** for the trend, the cost, and the last commits that changed the code around the call.
+- **Log-quality lint as you type**: eager formatting, secrets and personal data, lost
+  tracebacks, failures logged at `info`, logs in hot loops, missing context like `request_id`.
+- **Quick fix** that turns `"order %s failed", order.id` into a constant message with
+  `extra={"order_id": order.id}` (or keyword arguments for structlog / loguru).
+
+The terminal and CI get more: `logsite trace <trace_id>` (one request across services),
+`logsite leaks`, `logsite cost`, `logsite spikes --since-deploy v1.4`, and an MCP server for AI
+assistants. See the [project README](https://github.com/rajpaynaik/logsite#readme).
+
+## Setup
+
+1. **Install the server** in your project's environment:
+
+   ```bash
+   pip install "logsite[lsp]"
+   ```
+
+   The extension uses the Python interpreter you've selected in VS Code
+   (`python -m logsite serve`), then falls back to `logsite` on `PATH`. To use something else,
+   set `logsite.serverCommand`.
+
+2. **Point it at your logs** with a `logsite.toml` at the project root (lint works without one):
+
+   ```toml
+   [backend]
+   type = "loki"                  # or "opensearch", "elasticsearch", "cloudwatch", "file"
+   url = "http://localhost:3100"
+   selector = '{app="checkout"}'
+   aggregate = true               # let Loki count per file/line: exact at any volume
+
+   [cost]
+   price_per_gb = 0.50            # optional: show $/mo
+   ```
+
+3. **Add file and line to your log records** for exact matching, e.g. python-json-logger's
+   `%(pathname)s %(lineno)d`, structlog's `CallsiteParameterAdder`, or loguru's
+   `serialize=True`. Without them, logsite matches by message template.
+
+## Commands
+
+| Command | |
+|---|---|
+| `logsite: Restart server` | Restart after installing or changing the config |
+| `logsite: Show output` | The server log, for troubleshooting |
+
+## Settings
+
+| Setting | Default | |
+|---|---|---|
+| `logsite.serverCommand` | `[]` | Command that starts the server. Empty: the selected Python interpreter, then `logsite` on `PATH` |
 
 ## Develop
 
 ```bash
 npm install && npm run compile
-# then press F5 in VS Code with this folder open to launch an Extension Development Host
+# press F5 in VS Code with this folder open to launch an Extension Development Host
 ```

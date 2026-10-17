@@ -1,0 +1,105 @@
+# Publishes a release when a version tag is pushed: git tag v0.1.0 && git push origin v0.1.0
+#
+# Setup, once (see RELEASING.md):
+# - PyPI: add a trusted publisher for this repo, workflow "release.yml", environment "pypi".
+# - VS Code Marketplace: repository secret VSCE_PAT (Azure DevOps token, Marketplace: Manage).
+# - Open VSX (optional, for VSCodium / Cursor / Windsurf): repository secret OVSX_PAT.
+# A store whose credentials aren't set is skipped; nothing else is affected.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag matches both package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          py=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/logsite/__init__.py)
+          ext=$(node -p "require('./editors/vscode/package.json').version")
+          echo "tag=$tag python=$py vscode=$ext"
+          [ "$tag" = "$py" ] && [ "$tag" = "$ext" ] || {
+            echo "::error::tag v$tag must match src/logsite/__init__.py ($py) and editors/vscode/package.json ($ext)"
+            exit 1
+          }
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Python package
+        run: pip install build twine && python -m build && twine check --strict dist/*
+      - name: VS Code extension
+        working-directory: editors/vscode
+        run: npm ci && npx vsce package -o ../../dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/logsite
+    permissions:
+      id-token: write  # trusted publishing: no API token stored in the repo
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - run: rm dist/*.vsix
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  vscode:
+    # After PyPI: the extension tells people to `pip install logsite`, so it must exist first.
+    needs: pypi
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix
+      - name: Open VSX
+        if: env.OVSX_PAT != ''
+        run: npx --yes ovsx publish dist/*.vsix -p "$OVSX_PAT"
+      - if: env.VSCE_PAT == '' && env.OVSX_PAT == ''
+        run: echo "::warning::No VSCE_PAT or OVSX_PAT secret; the extension was not published"
+
+  github:
+    needs: [pypi, vscode]
+    if: ${{ !cancelled() && needs.pypi.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,3 +1,8 @@
+# Everything is bundled into out/extension.js by esbuild.
 src/**
+node_modules/**
 tsconfig.json
 **/*.map
+**/*.ts
+.vscode/**
+*.vsix

@@ -41,6 +41,10 @@ Try it against the demo: `cd examples/demo_app && logsite lint --volume && logsi
   positive and a negative case.
 - **Another Python logging library** (e.g. `eliot`, `picologging`) in `index.py:library_names`.
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md).
+
 ## Guidelines
 
 - Keep the core dependency-free (stdlib only). Vendor SDKs go behind optional extras.
