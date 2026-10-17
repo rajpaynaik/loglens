@@ -16,6 +16,7 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .backends import LogBackend, TimeRange, from_config
 from .config import Config
+from .cost import monthly_costs
 from .deploys import compare_deploy, resolve_deploy
 from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
@@ -30,8 +31,9 @@ After a release, start with `compare_deploy` (a git tag or sha): it reports line
 spiked or started erroring since the deploy, with the release's commits that touched them.
 Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one
 of them to see which commits changed the surrounding code. `lint` finds log-quality problems
-(rules: `list_rules`). `find_leaks` finds secrets and personal data that actually reached
-production logs; sample values are masked, so don't try to reconstruct them.
+(rules: `list_rules`). `log_costs` ranks log calls by monthly spend. `find_leaks` finds
+secrets and personal data that actually reached production logs; sample values are masked,
+so don't try to reconstruct them.
 Tools that need production data fail if no backend is configured.
 """
 
@@ -122,6 +124,37 @@ def build_server(cfg: Config) -> MCPServer:
         now = counts(backend(), all_sites, TimeRange.last(hours or window_default))
         ranked = sorted(now.items(), key=lambda kv: kv[1], reverse=True)[:top]
         return [{**_site(by_id[sid]), "count": n} for sid, n in ranked]
+
+    @mcp.tool(annotations=READ_ONLY)
+    def log_costs(hours: float | None = None, top: int = 20) -> dict[str, Any]:
+        """The log calls that cost the most: events, bytes and estimated spend per month,
+        projected from the last `hours`. Spend needs [cost] price_per_gb in the config;
+        without it, lines are ranked by volume.
+        """
+        hours = hours or window_default
+        all_sites, b = sites(), backend()
+        try:
+            usage = b.usage_by_line(all_sites, TimeRange.last(hours))
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        costs = monthly_costs(all_sites, usage, hours, cfg.cost)
+        return {
+            "currency": cfg.cost.currency,
+            "priced": cfg.cost.priced,
+            "total_cost_per_month": round(sum(c.cost_per_month for c in costs), 2),
+            "total_bytes_per_month": round(sum(c.bytes_per_month for c in costs)),
+            "lines": [
+                {
+                    **_site(c.site),
+                    "events_per_month": round(c.events_per_month),
+                    "bytes_per_month": round(c.bytes_per_month),
+                    "cost_per_month": round(c.cost_per_month, 2),
+                    "avg_bytes": round(c.avg_bytes),
+                    "estimated": c.estimated,
+                }
+                for c in costs[:top]
+            ],
+        }
 
     @mcp.tool(annotations=READ_ONLY)
     def spikes(

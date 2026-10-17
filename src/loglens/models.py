@@ -73,6 +73,7 @@ class LogRecord:
     timestamp: datetime | None
     message: str
     fields: dict[str, Any] = field(default_factory=dict)
+    size: int | None = None  # bytes as stored by the log backend, for cost estimates
 
     @property
     def source_file(self) -> str | None:
@@ -100,6 +101,15 @@ class LogRecord:
                 except (TypeError, ValueError):
                     return None
         return None
+
+
+@dataclass
+class Usage:
+    """How much one log call wrote in a time range."""
+
+    count: int = 0
+    bytes: int = 0
+    estimated: bool = False  # bytes extrapolated from a sample rather than measured
 
 
 @dataclass(frozen=True)

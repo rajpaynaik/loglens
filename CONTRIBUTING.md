@@ -21,6 +21,7 @@ Try it against the demo: `cd examples/demo_app && loglens lint --volume && logle
 | `src/loglens/backends/` | one file per log store; implement `LogBackend.query_logs` |
 | `src/loglens/lint.py` | lint rules (`LL0xx` static, `LL1xx` volume) |
 | `src/loglens/git.py` | `git log -L` history for the function around a log call |
+| `src/loglens/cost.py` | per-line usage → monthly cost (`loglens cost`) |
 | `src/loglens/leaks.py` | secret / personal-data detectors over production log contents |
 | `src/loglens/deploys.py` | before/after-release comparison (`spikes --since-deploy`) |
 | `src/loglens/server.py` | language server (pygls) |

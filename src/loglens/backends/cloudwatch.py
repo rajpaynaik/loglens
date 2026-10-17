@@ -82,6 +82,8 @@ class CloudWatchBackend(LogBackend):
         for event in events:
             ts = datetime.fromtimestamp(event["timestamp"] / 1000, tz=timezone.utc)
             record = parse_line(event.get("message", ""), timestamp=ts)
+            # CloudWatch bills each event as its UTF-8 message size plus 26 bytes.
+            record.size = (record.size or 0) + 26
             if "logStreamName" in event:
                 record.fields = {"logStreamName": event["logStreamName"], **record.fields}
             records.append(record)

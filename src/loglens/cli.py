@@ -1,5 +1,5 @@
-"""Command-line interface: ``loglens index | lint | counts | spikes | history | leaks | serve |
-mcp``."""
+"""Command-line interface: ``loglens index | lint | counts | cost | spikes | history | leaks |
+serve | mcp``."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .cost import format_bytes, format_money, monthly_costs
 from .deploys import compare_deploy, resolve_deploy
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
@@ -87,6 +88,85 @@ def cmd_counts(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_cost(args: argparse.Namespace, cfg: Config) -> int:
+    backend = _backend_or_exit(cfg)
+    sites = _sites(cfg, None)
+    hours = args.hours or cfg.window_hours
+    if args.price_per_gb is not None:
+        cfg.cost.price_per_gb = args.price_per_gb
+    if args.price_per_million_events is not None:
+        cfg.cost.price_per_million_events = args.price_per_million_events
+    usage = backend.usage_by_line(sites, TimeRange.last(hours), limit=args.limit)
+    costs = monthly_costs(sites, usage, hours, cfg.cost)
+    total_cost = sum(c.cost_per_month for c in costs)
+    total_bytes = sum(c.bytes_per_month for c in costs)
+    cur = cfg.cost.currency
+    if args.format == "json":
+        rows = [
+            {
+                "id": c.site.id,
+                "template": c.site.template,
+                "level": c.site.level,
+                "events_per_month": round(c.events_per_month),
+                "bytes_per_month": round(c.bytes_per_month),
+                "cost_per_month": round(c.cost_per_month, 2),
+                "avg_bytes": round(c.avg_bytes),
+                "estimated": c.estimated,
+            }
+            for c in costs[: args.top]
+        ]
+        json.dump(
+            {
+                "currency": cur,
+                "priced": cfg.cost.priced,
+                "total_cost_per_month": round(total_cost, 2),
+                "total_bytes_per_month": round(total_bytes),
+                "lines": rows,
+            },
+            sys.stdout,
+            indent=2,
+        )
+        print()
+        return 0
+    if not costs:
+        print(f"no matching logs in the last {hours:g}h", file=sys.stderr)
+        return 0
+    print(f"{'per month':>10}  {'volume':>9}  {'events':>7}  {'avg':>7}  line")
+    for c in costs[: args.top]:
+        price = format_money(c.cost_per_month, cur) if cfg.cost.priced else "-"
+        flag = "~" if c.estimated else " "
+        print(
+            f"{price:>10}  {format_bytes(c.bytes_per_month):>9}  "
+            f"{_humanize(c.events_per_month):>7}  {format_bytes(c.avg_bytes):>7}{flag} "
+            f"{c.site.id}  {c.site.template!r}"
+        )
+    sys.stdout.flush()  # keep the table above the stderr summary
+    top = costs[: args.top]
+    share = sum(c.bytes_per_month for c in top) / total_bytes if total_bytes else 0
+    total = format_money(total_cost, cur) + "/month, " if cfg.cost.priced else ""
+    print(
+        f"\n{total}{format_bytes(total_bytes)}/month across {len(costs)} log call(s); "
+        f"the top {len(top)} write {share:.0%} of the volume (projected from the last {hours:g}h)",
+        file=sys.stderr,
+    )
+    if any(c.estimated for c in top):
+        print("~ bytes estimated from a sample of each line's records", file=sys.stderr)
+    if not cfg.cost.priced:
+        print(
+            "set [cost] price_per_gb (or --price-per-gb) to see spend, e.g. 0.50 for "
+            "CloudWatch Logs ingestion",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _humanize(n: float) -> str:
+    for unit, div in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if n >= div:
+            return f"{n / div:.1f}{unit}"
+    return f"{n:.0f}"
+
+
 def cmd_leaks(args: argparse.Namespace, cfg: Config) -> int:
     backend = _backend_or_exit(cfg)
     sites = _sites(cfg, None)
@@ -114,6 +194,7 @@ def cmd_leaks(args: argparse.Namespace, cfg: Config) -> int:
                 f = e.samples[kind]
                 where = "" if f.where == "message" else f" in field {f.where!r}"
                 print(f"    {KINDS[kind]:<6} {kind:<15} x{n:<6,} e.g. {f.masked}{where}")
+        sys.stdout.flush()
         total = sum(e.records for e in leaks)
         capped = " (the --limit cap; raise it to scan more)" if scanned >= args.limit else ""
         print(
@@ -278,6 +359,17 @@ def main(argv: list[str] | None = None) -> int:
         help="real deploy time, ISO 8601 (default: the tag or commit date)",
     )
     p.set_defaults(func=cmd_spikes)
+
+    p = sub.add_parser("cost", help="bytes and estimated monthly spend per log call")
+    p.add_argument("--hours", type=float)
+    p.add_argument("--top", type=int, default=20)
+    p.add_argument("--price-per-gb", type=float, help="default: [cost] price_per_gb")
+    p.add_argument(
+        "--price-per-million-events", type=float, help="default: [cost] price_per_million_events"
+    )
+    p.add_argument("--limit", type=int, default=5000, help="records to sample when not aggregated")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_cost)
 
     p = sub.add_parser("leaks", help="secrets and personal data in production logs, per log call")
     p.add_argument("--hours", type=float)

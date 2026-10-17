@@ -14,8 +14,8 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from ..matching import Matcher
-from ..models import LogRecord, LogSite
-from .base import LogBackend, TimeRange, _parse_ts, parse_line, tally
+from ..models import LogRecord, LogSite, Usage
+from .base import LogBackend, TimeRange, _parse_ts, measure, parse_line, tally
 
 AGG_PAGE = 1000
 
@@ -126,6 +126,26 @@ class OpenSearchBackend(LogBackend):
         )
         return tally(Matcher(sites), locations, rest)
 
+    def usage_by_line(
+        self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000
+    ) -> dict[str, Usage]:
+        """Exact counts from the aggregation, bytes from each line's average document size
+        in a sample (OpenSearch has no per-field byte totals without the mapper-size plugin).
+        """
+        if not self.aggregate:
+            return super().usage_by_line(sites, time_range, limit)
+        sites = list(sites)
+        counts = self.count_by_line(sites, time_range, limit)
+        sample = measure(Matcher(sites), self.query_logs(time_range, limit=limit))
+        sampled = [u for u in sample.values() if u.count]
+        overall = sum(u.bytes for u in sampled) / max(1, sum(u.count for u in sampled))
+        usage: dict[str, Usage] = {}
+        for sid, n in counts.items():
+            s = sample.get(sid)
+            avg = s.bytes / s.count if s and s.count else overall
+            usage[sid] = Usage(count=n, bytes=round(avg * n), estimated=True)
+        return usage
+
     def _search(self, body: dict[str, Any]) -> dict:
         req = urllib.request.Request(
             f"{self.url}/{self.index}/_search",
@@ -154,6 +174,7 @@ class OpenSearchBackend(LogBackend):
             if message is None:
                 continue
             record = parse_line(str(message), timestamp=ts)
+            record.size = len(json.dumps(hit.get("_source", {})).encode())  # the stored document
             record.fields = {**fields, **record.fields}
             records.append(record)
         return records

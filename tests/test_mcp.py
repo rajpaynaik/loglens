@@ -65,6 +65,7 @@ def test_tools_are_read_only(project):
         "list_rules",
         "lint",
         "log_counts",
+        "log_costs",
         "spikes",
         "compare_deploy",
         "find_leaks",

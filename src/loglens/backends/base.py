@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..matching import Matcher
-from ..models import LogRecord, LogSite, parse_iso
+from ..models import LogRecord, LogSite, Usage, parse_iso
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,29 @@ class LogBackend(ABC):
         """
         return tally(Matcher(sites), {}, self.query_logs(time_range, limit=limit))
 
+    def usage_by_line(
+        self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000
+    ) -> dict[str, Usage]:
+        """Return ``{site.id: Usage(count, bytes)}``.
+
+        The default measures the records it fetches, so it's exact but shares the ``limit``
+        cap of :meth:`count_by_line`. Backends that aggregate server-side override this.
+        """
+        return measure(Matcher(sites), self.query_logs(time_range, limit=limit))
+
+
+def measure(matcher: Matcher, records: Iterable[LogRecord]) -> dict[str, Usage]:
+    """Count and sum the stored size of records per matched site."""
+    usage: dict[str, Usage] = {}
+    for record in records:
+        site = matcher.match(record)
+        if site is None:
+            continue
+        u = usage.setdefault(site.id, Usage())
+        u.count += 1
+        u.bytes += record.size if record.size is not None else len(record.message.encode())
+    return usage
+
 
 def tally(
     matcher: Matcher,
@@ -82,8 +105,12 @@ def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
                 (str(data[k]) for k in ("message", "msg", "event", "log") if k in data), raw
             )
             ts = timestamp or _parse_ts(data.get("timestamp") or data.get("time") or data.get("ts"))
-            return LogRecord(timestamp=ts, message=message, fields=data)
-    return LogRecord(timestamp=timestamp, message=raw)
+            return LogRecord(timestamp=ts, message=message, fields=data, size=_size(raw))
+    return LogRecord(timestamp=timestamp, message=raw, size=_size(raw))
+
+
+def _size(raw: str) -> int:
+    return len(raw.encode("utf-8", errors="replace"))
 
 
 def _parse_ts(value: object) -> datetime | None:

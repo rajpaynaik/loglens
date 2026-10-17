@@ -14,6 +14,7 @@ from pygls.uris import to_fs_path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .cost import LineCost, format_bytes, format_money, monthly_costs
 from .git import Commit, site_history
 from .index import DEFAULT_EXCLUDES, index_project, index_source
 from .lint import describe_trend, is_spike, lint_source, lint_volume
@@ -43,6 +44,7 @@ class LoglensServer(LanguageServer):
         super().__init__("loglens", __version__)
         self.cfg: Config | None = None
         self.counts: dict[str, int] = {}
+        self.costs: dict[str, LineCost] = {}  # only when [cost] has a price
         self.previous_counts: dict[str, int] = {}
         self.counts_ready = False
         self._history: dict[str, list[Commit]] = {}  # site id -> commits; reset on refresh
@@ -108,7 +110,13 @@ class LoglensServer(LanguageServer):
             try:
                 sites = index_project(self.cfg.root, DEFAULT_EXCLUDES | set(self.cfg.excludes))
                 current = TimeRange.last(self.cfg.window_hours)
-                self.counts = backend.count_by_line(sites, current)
+                if self.cfg.cost.priced:
+                    usage = backend.usage_by_line(sites, current)
+                    self.counts = {sid: u.count for sid, u in usage.items()}
+                    costs = monthly_costs(sites, usage, self.cfg.window_hours, self.cfg.cost)
+                    self.costs = {c.site.id: c for c in costs}
+                else:
+                    self.counts = backend.count_by_line(sites, current)
                 self.previous_counts = backend.count_by_line(sites, current.previous())
                 self._history.clear()
                 self.counts_ready = True
@@ -189,6 +197,9 @@ def code_lens(ls: LoglensServer, params: types.CodeLensParams) -> list[types.Cod
         before = ls.previous_counts.get(site.id, 0)
         if is_spike(n, before, ls.cfg.lint):
             title += f" $(arrow-up) {describe_trend(n, before)}"
+        cost = ls.costs.get(site.id)
+        if cost is not None:
+            title += f" · {format_money(cost.cost_per_month, ls.cfg.cost.currency)}/mo"
         pos = types.Position(line=site.line - 1, character=site.col)
         lenses.append(
             types.CodeLens(
@@ -226,6 +237,14 @@ def hover(ls: LoglensServer, params: types.HoverParams) -> types.Hover | None:
         parts.append(f"**loglens**: {n:,} in the last {window} (previous {window}: {before:,})")
         if is_spike(n, before, ls.cfg.lint):
             parts[-1] += f", **spiked {describe_trend(n, before)}**"
+        cost = ls.costs.get(site.id)
+        if cost is not None:
+            approx = "≈" if cost.estimated else ""
+            parts.append(
+                f"Cost: {approx}{format_money(cost.cost_per_month, ls.cfg.cost.currency)}/month "
+                f"({format_bytes(cost.bytes_per_month)}/month, "
+                f"{format_bytes(cost.avg_bytes)} per line)"
+            )
     commits = ls.history(site.path, site.line)
     if commits:
         parts.append("Recent changes to this code:")

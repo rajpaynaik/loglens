@@ -19,6 +19,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **Log index**: finds every `logger.*` / `logging.*` call using `ast`, including `%`-style, f-string and `.format()` templates.
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
+- **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `loglens cost` in the terminal), so you fix the few lines that make up most of the bill.
 - **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
@@ -49,6 +50,7 @@ cd examples/demo_app
 loglens index              # list every log call
 loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
 loglens counts             # production counts per line, from the configured backend
+loglens cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
 loglens lint --volume      # static + volume rules
 loglens spikes             # lines that jumped vs the previous window, with suspect commits
 loglens spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
@@ -81,6 +83,11 @@ required_fields = ["trace_id"]      # enables LL006
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
+
+[cost]
+price_per_gb = 0.50                 # what your log store charges per GB ingested
+price_per_million_events = 0        # per-event indexing charges, if your vendor has them
+# currency = "€"
 
 [leaks]
 ignore = ["email"]                  # detector kinds to skip
@@ -131,6 +138,7 @@ All tools are read-only:
 | `compare_deploy` | What spiked or started erroring after release `v1.4.0`, and which commits in it are to blame? |
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
+| `log_costs` | Which log calls cost the most per month? |
 | `find_leaks` | Which log calls are writing secrets or personal data to production logs? |
 | `log_counts` | Which log calls are the loudest in production? |
 | `lint` | Which log calls have quality problems (optionally including volume rules)? |
@@ -176,6 +184,29 @@ the surrounding function, so unreleased work on `main` doesn't show up.
 
 The deploy time defaults to the tag date (annotated tags) or the commit date. If you deploy
 later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
+
+## Cost per line
+
+In most services a handful of log calls write most of the bytes. `loglens cost` ranks every
+log call by projected monthly spend (usage over the configured window, scaled to 30 days):
+
+```
+ per month     volume   events      avg  line
+   $1,840   3.7 TB    9.1B    410 B  app/api.py:88  'request received %s %s'
+     $212   424.0 GB  1.3B    330 B  app/cache.py:41  'cache miss for %s'
+```
+
+| Backend | Bytes come from |
+|---------|-----------------|
+| Loki with `aggregate = true` | `bytes_over_time` per file/line: exact at any volume |
+| OpenSearch / Elasticsearch with `aggregate = true` | exact counts × each line's average document size from a sample (marked `~`) |
+| CloudWatch Logs | each event's size + the 26 bytes CloudWatch bills per event |
+| Others, or without `aggregate` | the size of each record fetched (exact, but capped at `--limit`) |
+
+Set `price_per_gb` to what you pay for ingestion (CloudWatch Logs is about $0.50/GB), and
+`price_per_million_events` if your vendor also charges per indexed event. Prices are yours
+to set because they vary by vendor, plan and region. Once a price is set, the editor shows
+the cost next to each log call and in its hover.
 
 ## Leak scanning
 
@@ -233,7 +264,7 @@ class LogBackend(ABC):
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
-- [ ] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
+- [x] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 - [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak

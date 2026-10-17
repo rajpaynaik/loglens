@@ -16,8 +16,8 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from ..matching import Matcher
-from ..models import LogRecord, LogSite
-from .base import LogBackend, TimeRange, parse_line, tally
+from ..models import LogRecord, LogSite, Usage
+from .base import LogBackend, TimeRange, measure, parse_line, tally
 
 
 class LokiBackend(LogBackend):
@@ -59,10 +59,11 @@ class LokiBackend(LogBackend):
             query += " |= " + json.dumps(contains)
         return query
 
-    def build_count_query(self, time_range: TimeRange) -> str:
+    def build_count_query(self, time_range: TimeRange, fn: str = "count_over_time") -> str:
+        """``fn`` is ``count_over_time`` (lines) or ``bytes_over_time`` (stored bytes)."""
         seconds = max(1, round((time_range.end - time_range.start).total_seconds()))
         return (
-            f"sum by ({self.file_label}, {self.line_label}) (count_over_time("
+            f"sum by ({self.file_label}, {self.line_label}) ({fn}("
             f'{self.selector} | {self.parser} | __error__="" '
             f'| {self.file_label}!="" | {self.line_label}!="" '
             f"[{seconds}s]))"
@@ -81,16 +82,39 @@ class LokiBackend(LogBackend):
     ) -> dict[str, int]:
         if not self.aggregate:
             return super().count_by_line(sites, time_range, limit)
+        locations = self._located(time_range)
+        rest = self.query_logs(time_range, limit=limit, query=self.build_unlocated_query())
+        return tally(Matcher(sites), locations, rest)
+
+    def usage_by_line(
+        self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000
+    ) -> dict[str, Usage]:
+        if not self.aggregate:
+            return super().usage_by_line(sites, time_range, limit)
+        matcher = Matcher(sites)
+        counts = self._located(time_range)
+        sizes = self._located(time_range, "bytes_over_time")
+        rest = self.query_logs(time_range, limit=limit, query=self.build_unlocated_query())
+        usage = measure(matcher, rest)
+        for loc, n in counts.items():
+            site = matcher.match_location(*loc)
+            if site is not None:
+                u = usage.setdefault(site.id, Usage())
+                u.count += n
+                u.bytes += sizes.get(loc, 0)
+        return usage
+
+    def _located(
+        self, time_range: TimeRange, fn: str = "count_over_time"
+    ) -> dict[tuple[str, int], int]:
         payload = self._get(
             "query",
             {
-                "query": self.build_count_query(time_range),
+                "query": self.build_count_query(time_range, fn),
                 "time": str(int(time_range.end.timestamp() * 1e9)),
             },
         )
-        locations = self.parse_count_response(payload, self.file_label, self.line_label)
-        rest = self.query_logs(time_range, limit=limit, query=self.build_unlocated_query())
-        return tally(Matcher(sites), locations, rest)
+        return self.parse_count_response(payload, self.file_label, self.line_label)
 
     @staticmethod
     def parse_count_response(
