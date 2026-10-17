@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..models import LogRecord
+from ..tracebacks import is_error
 from .base import LogBackend, TimeRange, parse_line
+
+# ?term ORs terms; terms are case-sensitive, hence the spellings.
+ERROR_PATTERN = "?ERROR ?Error ?error ?CRITICAL ?critical ?FATAL ?Traceback ?Exception ?exception"
 
 
 class CloudWatchBackend(LogBackend):
@@ -50,14 +54,18 @@ class CloudWatchBackend(LogBackend):
         return self.filter_pattern or term
 
     def query_logs(
-        self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
+        self,
+        time_range: TimeRange,
+        contains: str | None = None,
+        limit: int = 5000,
+        pattern: str | None = None,
     ) -> list[LogRecord]:
         params: dict[str, Any] = {
             "logGroupName": self.log_group,
             "startTime": int(time_range.start.timestamp() * 1000),
             "endTime": int(time_range.end.timestamp() * 1000),
         }
-        pattern = self.build_pattern(contains)
+        pattern = pattern or self.build_pattern(contains)
         if pattern:
             params["filterPattern"] = pattern
         if self.log_stream_prefix:
@@ -75,6 +83,13 @@ class CloudWatchBackend(LogBackend):
                 break
             params["nextToken"] = token
         return records[:limit]
+
+    def query_errors(self, time_range: TimeRange, limit: int = 5000) -> list[LogRecord]:
+        """CloudWatch's ``?term`` pattern ORs error words server-side, unless a
+        ``filter_pattern`` is configured (patterns can't be combined); then it's client-side."""
+        pattern = self.filter_pattern or ERROR_PATTERN
+        records = self.query_logs(time_range, limit=limit, pattern=pattern)
+        return [r for r in records if is_error(r)]
 
     @staticmethod
     def parse_events(events: list[dict[str, Any]]) -> list[LogRecord]:

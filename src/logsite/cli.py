@@ -1,5 +1,5 @@
 """Command-line interface: ``logsite index | lint | context | structure | counts | cost | spikes |
-history | trace | leaks | serve | mcp``."""
+errors | history | trace | leaks | serve | mcp``."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from .config import Config, load_config
 from .context import detect_injected, measure_coverage, overall_coverage, satisfied
 from .cost import format_bytes, format_money, monthly_costs
 from .deploys import compare_deploy, resolve_deploy
+from .errors import AppFiles, ErrorGroup, error_window, summarize_errors, summary_json
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import KINDS, find_leaks
@@ -443,6 +444,107 @@ def _deploy_spikes(args: argparse.Namespace, cfg: Config, backend, sites) -> int
     return 0
 
 
+def _when(ts) -> str:
+    return f"{ts:%Y-%m-%d %H:%M}" if ts else "?"
+
+
+def _print_group(i: int, g: ErrorGroup, args: argparse.Namespace, cfg: Config) -> None:
+    trend = "" if g.trend is None else ("new" if g.is_new else g.trend)
+    print(f"{i:>2}  {g.count:>7,}  {trend:<6}  {g.title[:110]}  [{g.id}]")
+    rows = []
+    for cause in g.causes:
+        rows.append(("caused by", cause[:110]))
+    if g.raised_at:
+        origin = f" (in {g.origin})" if g.origin else ""
+        rows.append(("raised", f"{g.raised_at} in {g.raised_in}(){origin}"))
+    elif g.origin:
+        rows.append(("raised", f"in {g.origin}, no frame from this project"))
+    if g.logged_at:
+        rows.append(("logged", f"{g.logged_at.id}  {g.logged_at.template!r}"[:120]))
+    if len(g.path) > 1:
+        rows.append(("path", " → ".join(g.path)))
+    seen = []
+    if g.first_seen:
+        seen.append(f"{_when(g.first_seen)} → {_when(g.last_seen)} UTC")
+    if g.services:
+        seen.append(", ".join(s for s, _ in g.services.most_common(3)))
+    if seen:
+        rows.append(("seen", " · ".join(seen)))
+    ids = dict(g.sample.get("ids") or {})
+    trace = ids.pop(cfg.timeline.field_name, None)
+    if trace:
+        rows.append(("example", f"logsite trace {trace}"))
+    if ids:
+        rows.append(("ids", " ".join(f"{k}={v}" for k, v in ids.items())))
+    for label, text in rows:
+        print(f"{'':>19}{label:<10}{text}")
+    if args.traceback and g.sample.get("traceback"):
+        for line in g.sample["traceback"].splitlines():
+            print(f"{'':>19}| {line}")
+
+
+def cmd_errors(args: argparse.Namespace, cfg: Config) -> int:
+    backend = _backend_or_exit(cfg)
+    sites = _sites(cfg, None)
+    app = AppFiles.scan(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+    if args.since_deploy and args.hours:
+        sys.exit("logsite: --hours and --since-deploy can't be combined")
+    try:
+        window, label = error_window(
+            cfg.root, args.hours or cfg.window_hours, args.since_deploy, args.deployed_at
+        )
+    except ValueError as exc:
+        sys.exit(f"logsite: {exc.args[0].replace('deployed_at', '--deployed-at')}")
+    try:
+        summary = summarize_errors(
+            backend,
+            sites,
+            app,
+            window,
+            window.previous(),
+            cfg.lint,
+            leaks=cfg.leaks,
+            limit=args.limit,
+            sample_fields=dict.fromkeys([cfg.timeline.field_name, "trace_id", "request_id"]),
+        )
+    except Exception as exc:
+        sys.exit(f"logsite: couldn't query the {backend.name} backend: {exc}")
+    if args.format == "json":
+        json.dump(summary_json(summary, args.top), sys.stdout, indent=2)
+        print()
+        return 0
+    if not summary.groups:
+        print(f"no errors {label}", file=sys.stderr)
+        return 0
+    before = ""
+    if summary.previous_events is not None:
+        before = f" (before: {summary.previous_events:,}"
+        if summary.previous_events:
+            before += f", {summary.events / summary.previous_events:.1f}x"
+        before += ")"
+    new = sum(g.is_new for g in summary.groups)
+    print(
+        f"{len(summary.groups)} error group(s), {summary.events:,} event(s) {label}{before}"
+        + (f"; {new} new" if new else "")
+        + (f"; {summary.resolved} gone since the window before" if summary.resolved else "")
+        + "\n"
+    )
+    print(f"{'#':>2}  {'COUNT':>7}  {'TREND':<6}  ERROR")
+    for i, g in enumerate(summary.groups[: args.top], 1):
+        _print_group(i, g, args, cfg)
+    sys.stdout.flush()
+    rest = len(summary.groups) - args.top
+    if rest > 0:
+        print(f"\n{rest} more group(s); raise --top to see them", file=sys.stderr)
+    if summary.truncated:
+        print(
+            f"stopped at {args.limit:,} error records per window; counts are a lower bound "
+            "(raise --limit)",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def cmd_history(args: argparse.Namespace, cfg: Config) -> int:
     try:
         path, line = parse_target(args.target, cfg.root)
@@ -540,6 +642,22 @@ def main(argv: list[str] | None = None) -> int:
         help="real deploy time, ISO 8601 (default: the tag or commit date)",
     )
     p.set_defaults(func=cmd_spikes)
+
+    p = sub.add_parser("errors", help="production errors grouped by cause, newest problems first")
+    p.add_argument("--hours", type=float)
+    p.add_argument(
+        "--since-deploy", metavar="REF", help="errors since a release (git tag/sha), vs before"
+    )
+    p.add_argument(
+        "--deployed-at",
+        metavar="TIME",
+        help="real deploy time, ISO 8601 (default: the tag or commit date)",
+    )
+    p.add_argument("--top", type=int, default=10)
+    p.add_argument("--limit", type=int, default=5000, help="error records per window (5000)")
+    p.add_argument("--traceback", action="store_true", help="show a sample traceback per group")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_errors)
 
     p = sub.add_parser("cost", help="bytes and estimated monthly spend per log call")
     p.add_argument("--hours", type=float)

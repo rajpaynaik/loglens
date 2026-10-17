@@ -22,6 +22,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `logsite cost` in the terminal), so you fix the few lines that make up most of the bill.
+- **Error summary**: `logsite errors` turns thousands of production errors and tracebacks into a short list of groups, new and spiking ones first, each with where it was raised in your code, the log call that logged it, and a sample trace id. In the editor, the line that raised an error shows how often it did. See [Error summary](#error-summary).
 - **Request timeline**: `logsite trace <trace_id>` shows every log line for one request across services, in order, with this repo's lines linked to the code that wrote them and the first warning flagged as a likely cause.
 - **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `logsite spikes` lists the lines that jumped, with the commits that likely caused it.
@@ -64,6 +65,8 @@ logsite cost --price-per-gb 0.5   # bytes and $/month per log call, most expensi
 logsite lint --volume      # static + volume rules
 logsite spikes             # lines that jumped vs the previous window, with suspect commits
 logsite spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
+logsite errors             # production errors grouped by cause, new and spiking first
+logsite errors --since-deploy v1.4.0   # what started failing after a release
 logsite history app/checkout.py:7   # commits that touched the code around a log line
 logsite leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
 logsite trace 4bf92f35...  # every log line for one request, across services, in order
@@ -167,6 +170,7 @@ All tools are read-only:
 
 | Tool | What it answers |
 |------|-----------------|
+| `error_summary` | What's failing in production right now (or since release `v1.4.0`), grouped by cause, and where is it raised? |
 | `request_timeline` | What happened to request `4bf92f35…`, service by service, and where did it first go wrong? |
 | `compare_deploy` | What spiked or started erroring after release `v1.4.0`, and which commits in it are to blame? |
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
@@ -338,6 +342,54 @@ Set `price_per_gb` to what you pay for ingestion (CloudWatch Logs is about $0.50
 to set because they vary by vendor, plan and region. Once a price is set, the editor shows
 the cost next to each log call and in its hover.
 
+## Error summary
+
+A bad deploy can write thousands of tracebacks an hour, each a little different: another
+order id, another timeout, the code moved down two lines. `logsite errors` groups them by
+cause and ranks the groups: new ones first, then the ones that spiked, then the biggest.
+
+```
+3 error group(s), 3,263 event(s) in the last 24h (before: 257, 12.7x); 1 new
+
+ #    COUNT  TREND   ERROR
+ 1    3,000  new     TimeoutError: POST http://inventory/SKU-<n> timed out after <n>s  [e3d8651a]
+                   raised    app/inventory.py:9 in reserve() (in httpx)
+                   logged    app/checkout.py:13  'payment failed for order %s'
+                   path      checkout.charge → inventory.reserve → httpx
+                   seen      2026-10-17 00:32 → 2026-10-17 06:17 UTC · checkout
+                   example   logsite trace 376ebcaa1bec8d42764f92c32dd63566
+ 2      201  1.0x    app.checkout.PaymentError: can't price order <n>  [ec780636]
+                   caused by KeyError: <str>
+                   raised    app/pricing.py:2 in convert()
+                   logged    app/checkout.py:22  'pricing failed'
+                   path      checkout.price → pricing.convert
+ 3       62  1.1x    shipping label service returned <n> for order <n>  [b6e7b7be]
+                   logged    app/checkout.py:25  'shipping label service returned 503 for order %s'
+```
+
+- **One group per cause**: the exception types in the chain plus the frames in *your*
+  code. Line numbers, library frames and the values in the message don't split a group;
+  values that differ show as `<n>`, `<str>`, `<id>`.
+- **Raised** is the deepest frame of your code in the root cause (and the library it came
+  from); **logged** is the log call that wrote it; **path** is how the request got there.
+- **Errors without a traceback** group by the log call that wrote them, or by their message
+  with values masked.
+- `--since-deploy v1.4.0` summarizes from the deploy until now, compared with an equally
+  long window before it. `--traceback` prints a sample traceback per group, `--format json`
+  everything. Samples are redacted like `logsite leaks` reports.
+
+Tracebacks are read from python-json-logger's `exc_info`, ECS `error.stack_trace`,
+OpenTelemetry `exception.stacktrace`, loguru's `serialize=True` output, structlog's
+`dict_tracebacks`, error type/message fields, and plain-text
+`Traceback (most recent call last):` blocks (the file backend joins multi-line ones). Each
+backend asks for errors only (a LogQL line filter, an OpenSearch query, a CloudWatch
+filter pattern), so `--limit` isn't used up by `info` lines.
+
+In the editor, the line that raised an error gets a code lens
+(`TimeoutError 3k (new) in 24h`) and a hover with the groups; the log call that logged it
+lists them too. The MCP tool `error_summary` gives an AI assistant the same groups, with
+trace ids to pass to `request_timeline`.
+
 ## Following a request
 
 A failed checkout is hard to read service by service: the gateway returns a 504, checkout
@@ -404,6 +456,8 @@ Python core (pygls)  ── also exposed as an MCP server (mcp_server.py)
   ├── matching.py  → production log → source line
   ├── backends/    → file | Loki | OpenSearch/Elasticsearch | CloudWatch
   ├── lint.py      → noise, dead logs, missing IDs, PII
+  ├── tracebacks.py → finds and parses the exception in a log record
+  ├── errors.py    → groups production errors by cause
   ├── kafka*       → consumer lag, DLQ, errors per topic
   └── git.py       → commits that touched a spiking line (git log -L)
                                                    * = roadmap
@@ -415,6 +469,7 @@ Every backend implements one interface ([`backends/base.py`](src/logsite/backend
 class LogBackend(ABC):
     def query_logs(self, time_range, contains=None, limit=5000) -> list[LogRecord]: ...
     def count_by_line(self, sites, time_range) -> dict[str, int]: ...  # default: fetch + match
+    def query_errors(self, time_range, limit=5000) -> list[LogRecord]: ...  # default: filter
 ```
 
 ## Roadmap
@@ -432,7 +487,8 @@ class LogBackend(ABC):
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 - [x] Deploy-aware comparison: `logsite spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
-- [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on logsite data
+- [x] Error summary: production errors grouped by cause (`logsite errors`, the `error_summary` MCP tool, and a code lens on the line that raised), new and spiking first, with `--since-deploy`
+- [ ] More MCP tools for incident investigation: recent messages for a line, so AI assistants can do root-cause analysis on logsite data
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
 - [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs

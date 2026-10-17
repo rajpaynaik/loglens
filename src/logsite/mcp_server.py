@@ -19,6 +19,7 @@ from .config import Config
 from .context import detect_injected, measure_coverage, overall_coverage, satisfied
 from .cost import monthly_costs
 from .deploys import compare_deploy, resolve_deploy
+from .errors import AppFiles, error_window, summarize_errors, summary_json
 from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import find_leaks
@@ -31,6 +32,8 @@ from .timeline import find_timeline, timeline_json
 INSTRUCTIONS = """\
 logsite maps production logs back to the Python log calls that emitted them.
 Log calls are identified as "PATH:LINE" (PATH relative to the project root).
+For "what's failing in production?", start with `error_summary`: errors grouped by cause,
+with where each was raised and a sample trace id.
 To follow one failed request across services, use `request_timeline` with its trace id.
 After a release, start with `compare_deploy` (a git tag or sha): it reports lines that
 spiked or started erroring since the deploy, with the release's commits that touched them.
@@ -261,6 +264,42 @@ def build_server(cfg: Config) -> MCPServer:
                 for c in report.changes
             ],
         }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def error_summary(
+        hours: float | None = None,
+        since_deploy: str | None = None,
+        deployed_at: str | None = None,
+        top: int = 10,
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        """Production errors grouped by cause: the answer to "what's breaking right now?".
+
+        Thousands of error records and tracebacks become a few groups, ranked new first, then
+        spiking, then by count. Each has the exception (and its causes), how often it
+        happened vs the window before, where it was raised in this project, the log call
+        that logged it, the call path, and a sample with its trace id (pass that to
+        `request_timeline` to see the whole request). Values in messages are masked as <n>,
+        <str>, <id> when they differ within a group.
+
+        hours: window (default: the configured window). since_deploy: a git tag or sha;
+        summarizes deploy..now vs an equally long window before it. deployed_at: the real
+        deploy time in ISO 8601 (default: the tag or commit date).
+        """
+        try:
+            window, _ = error_window(cfg.root, hours or window_default, since_deploy, deployed_at)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        b = backend()
+        app = AppFiles.scan(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+        fields = dict.fromkeys([cfg.timeline.field_name, "trace_id", "request_id"])
+        try:
+            summary = summarize_errors(
+                b, sites(), app, window, window.previous(), cfg.lint, cfg.leaks, limit, fields
+            )
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        return summary_json(summary, top)
 
     @mcp.tool(name="find_leaks", annotations=READ_ONLY)
     def find_leaks_tool(hours: float | None = None, limit: int = 5000) -> dict[str, Any]:

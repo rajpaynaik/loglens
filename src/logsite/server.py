@@ -16,6 +16,7 @@ from .backends import TimeRange, from_config
 from .config import Config, load_config, project_root
 from .context import detect_in_source
 from .cost import LineCost, format_bytes, format_money, monthly_costs
+from .errors import AppFiles, ErrorGroup, summarize_errors
 from .fixes import structured_rewrite
 from .git import Commit, site_history
 from .index import DEFAULT_EXCLUDES, index_calls, index_project, index_source, iter_python_files
@@ -56,6 +57,8 @@ class Project:
         self.counts_ready = False
         self._history: dict[str, list[Commit]] = {}  # site id -> commits; reset on refresh
         self._injected: dict[str, dict[str, list[str]]] = {}  # file -> injected context
+        self.raised: dict[tuple[str, int], list[ErrorGroup]] = {}  # (path, line) -> errors
+        self.logged: dict[str, list[ErrorGroup]] = {}  # site id -> errors it logged
 
     def rel_path(self, fs: str) -> str:
         try:
@@ -93,6 +96,7 @@ class Project:
                     self.counts = backend.count_by_line(sites, current)
                 self.previous_counts = backend.count_by_line(sites, current.previous())
                 self._history.clear()
+                self.refresh_errors(backend, sites, current)
                 self.counts_ready = True
                 self.ls.workspace_code_lens_refresh(None)
                 for uri in list(self.ls.workspace.text_documents):
@@ -108,6 +112,26 @@ class Project:
                     )
                 )
             self.ls._stop.wait(REFRESH_SECONDS)
+
+    def refresh_errors(self, backend, sites, current: TimeRange) -> None:
+        """Group production errors, so the line that raised one shows how often it did."""
+        try:
+            app = AppFiles.scan(self.cfg.root, DEFAULT_EXCLUDES | set(self.cfg.excludes))
+            summary = summarize_errors(
+                backend, sites, app, current, current.previous(), self.cfg.lint, self.cfg.leaks
+            )
+        except Exception as exc:  # errors are extra: counts still show
+            log.warning("logsite: failed to group errors from %s: %s", backend.name, exc)
+            return
+        raised: dict[tuple[str, int], list[ErrorGroup]] = {}
+        logged: dict[str, list[ErrorGroup]] = {}
+        for g in summary.groups:
+            if g.raised_at:
+                file, _, line = g.raised_at.rpartition(":")
+                raised.setdefault((file, int(line)), []).append(g)
+            if g.logged_at:
+                logged.setdefault(g.logged_at.id, []).append(g)
+        self.raised, self.logged = raised, logged
 
     def scan_injected(self, path: str | None = None, source: str | None = None) -> None:
         """Refresh auto-injected context for one file (on save) or the whole project."""
@@ -269,7 +293,40 @@ def code_lens(ls: LogsiteServer, params: types.CodeLensParams) -> list[types.Cod
                 command=types.Command(title=title, command=""),
             )
         )
+    lines = ls.workspace.get_text_document(uri).lines
+    for (file, line), groups in project.raised.items():
+        if file != path or line > len(lines):
+            continue
+        text = lines[line - 1]
+        pos = types.Position(line=line - 1, character=len(text) - len(text.lstrip()))
+        title = "$(error) " + ", ".join(_error_brief(g) for g in groups) + f" in {window}"
+        lenses.append(
+            types.CodeLens(
+                range=types.Range(start=pos, end=pos),
+                command=types.Command(title=title, command=""),
+            )
+        )
     return lenses
+
+
+def _error_brief(g: ErrorGroup) -> str:
+    """``TimeoutError 3k (new)``"""
+    name = (g.exc_type or g.title).rsplit(".", 1)[-1][:60]
+    trend = " (new)" if g.is_new else (f" ({g.trend})" if g.trend and g.trend != "1.0x" else "")
+    return f"{name} {humanize(g.count)}{trend}"
+
+
+def _error_lines(groups: list[ErrorGroup], window: str, logged: bool) -> list[str]:
+    out = []
+    for g in groups[:5]:
+        trend = "new" if g.is_new else (g.trend or "")
+        where = ""
+        if logged and g.raised_at:
+            where = f", raised at `{g.raised_at}`"
+        elif not logged and g.logged_at:
+            where = f", logged at `{g.logged_at.id}`"
+        out.append(f"- `{g.title[:100]}`: {g.count:,} in {window} ({trend}){where} `[{g.id}]`")
+    return out
 
 
 @server.feature(types.TEXT_DOCUMENT_HOVER)
@@ -288,12 +345,21 @@ def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
         ),
         None,
     )
-    if site is None:
+    raised = project.raised.get((path, line), [])
+    if site is None and not raised:
         return None
 
     parts: list[str] = []
+    window = f"{project.cfg.window_hours:g}h"
+    if raised:
+        parts.append("**logsite**: errors raised here in production:")
+        parts.append("\n".join(_error_lines(raised, window, logged=False)))
+        parts.append("Details: `logsite errors --traceback`")
+    if site is None:
+        return types.Hover(
+            contents=types.MarkupContent(kind=types.MarkupKind.Markdown, value="\n\n".join(parts))
+        )
     if project.counts_ready:
-        window = f"{project.cfg.window_hours:g}h"
         n, before = project.counts.get(site.id, 0), project.previous_counts.get(site.id, 0)
         parts.append(f"**logsite**: {n:,} in the last {window} (previous {window}: {before:,})")
         if is_spike(n, before, project.cfg.lint):
@@ -307,6 +373,10 @@ def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
                 f"({format_bytes(cost.bytes_per_month)}/month, "
                 f"{format_bytes(cost.avg_bytes)} per line)"
             )
+    logged = project.logged.get(site.id, [])
+    if logged:
+        parts.append("Errors logged here:")
+        parts.append("\n".join(_error_lines(logged, window, logged=True)))
     commits = project.history(site.path, site.line)
     if commits:
         parts.append("Recent changes to this code:")

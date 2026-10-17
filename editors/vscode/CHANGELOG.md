@@ -6,6 +6,7 @@ First release.
 
 - Production counts and cost per month above every log call, with a spike marker.
 - Hover: trend vs the previous window, cost, and recent commits around the call.
+- Production errors: a code lens and hover on the line that raised them, grouped by cause.
 - Log-quality lint as you type (LL001–LL008), including context rules and severity checks.
 - Quick fix: move values out of the message into `extra=` / keyword arguments (LL008).
 - Python `logging`, structlog and loguru.

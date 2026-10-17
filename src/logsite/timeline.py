@@ -12,15 +12,13 @@ from .context import get_field
 from .leaks import LeakConfig, redact
 from .matching import Matcher
 from .models import LogRecord, LogSite
+from .tracebacks import ERROR_WORDS, LEVEL_FIELDS, WARNING_WORDS
 
 # Where log stores and shippers usually put the emitting service's name.
 SERVICE_FIELDS = (
     "service", "service.name", "service_name", "app", "application", "k8s.container.name",
     "kubernetes.container_name", "container", "container_name", "job", "logStreamName",
 )  # fmt: skip
-LEVEL_FIELDS = ("level", "levelname", "severity", "log.level", "level.name")
-ERROR_WORDS = {"error", "err", "critical", "fatal", "exception", "crit", "alert", "emergency"}
-WARNING_WORDS = {"warning", "warn"}
 
 
 @dataclass

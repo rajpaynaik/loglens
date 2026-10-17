@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 
 from ..matching import Matcher
 from ..models import LogRecord, LogSite, Usage
+from ..tracebacks import is_error
 from .base import LogBackend, TimeRange, measure, parse_line, tally
+
+ERROR_FILTER = "(?i)(error|exception|traceback|critical|fatal)"
 
 
 class LokiBackend(LogBackend):
@@ -151,6 +154,13 @@ class LokiBackend(LogBackend):
             "direction": "backward",
         }
         return self.parse_response(self._get("query_range", params))
+
+    def query_errors(self, time_range: TimeRange, limit: int = 5000) -> list[LogRecord]:
+        """A case-insensitive line filter narrows to likely errors server-side; levels and
+        tracebacks are then checked client-side."""
+        query = f"{self.selector} |~ {json.dumps(ERROR_FILTER)}"
+        records = self.query_logs(time_range, limit=limit, query=query)
+        return [r for r in records if is_error(r)]
 
     @staticmethod
     def parse_response(payload: dict) -> list[LogRecord]:

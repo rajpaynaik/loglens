@@ -72,6 +72,7 @@ def test_tools_are_read_only(project):
         "compare_deploy",
         "request_timeline",
         "find_leaks",
+        "error_summary",
         "log_history",
     }
     assert all(t.annotations.read_only_hint for t in tools.values())

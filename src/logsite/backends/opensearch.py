@@ -16,9 +16,19 @@ from typing import Any
 from ..context import mentions
 from ..matching import Matcher
 from ..models import LogRecord, LogSite, Usage
+from ..tracebacks import is_error
 from .base import LogBackend, TimeRange, _parse_ts, measure, parse_line, tally
 
 AGG_PAGE = 1000
+# Keyword fields are case-sensitive, hence the spellings.
+ERROR_QUERY = (
+    "ERROR OR Error OR error OR CRITICAL OR critical OR FATAL OR fatal OR Traceback OR "
+    "exception OR Exception"
+)
+EXCEPTION_FIELDS = (
+    "error.stack_trace", "error.type", "exception.type", "exception.stacktrace", "exc_info",
+    "exc_text", "stack_trace",
+)  # fmt: skip
 
 
 class OpenSearchBackend(LogBackend):
@@ -159,6 +169,24 @@ class OpenSearchBackend(LogBackend):
         body["sort"] = [{self.timestamp_field: {"order": "asc"}}]
         records = self.parse_response(self._search(body), self.timestamp_field, self.message_field)
         return [r for r in records if mentions(r, field, value)]
+
+    def query_errors(self, time_range: TimeRange, limit: int = 5000) -> list[LogRecord]:
+        """Documents with an error level, an exception field, or error words anywhere; the
+        level and traceback are then checked client-side."""
+        body = self.build_query(time_range, limit=limit)
+        body["query"]["bool"]["filter"].append(
+            {
+                "bool": {
+                    "should": [
+                        {"query_string": {"query": ERROR_QUERY, "fields": ["*"], "lenient": True}},
+                        *({"exists": {"field": f}} for f in EXCEPTION_FIELDS),
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }
+        )
+        records = self.parse_response(self._search(body), self.timestamp_field, self.message_field)
+        return [r for r in records if is_error(r)]
 
     def _search(self, body: dict[str, Any]) -> dict:
         req = urllib.request.Request(

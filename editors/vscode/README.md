@@ -19,12 +19,16 @@ logsite maps production logs back to the exact line that wrote them, for Python'
 - **Production counts above every log call**, with a `▲ 8.0x` marker when a line spiked.
 - **Cost per line**: `$/mo` next to the count once you set your price per GB.
 - **Hover** for the trend, the cost, and the last commits that changed the code around the call.
+- **Production errors where they're raised**: the line that raised an exception gets
+  `TimeoutError 3k (new) in 24h`, and the hover lists each error group with the log call that
+  logged it.
 - **Log-quality lint as you type**: eager formatting, secrets and personal data, lost
   tracebacks, failures logged at `info`, logs in hot loops, missing context like `request_id`.
 - **Quick fix** that turns `"order %s failed", order.id` into a constant message with
   `extra={"order_id": order.id}` (or keyword arguments for structlog / loguru).
 
-The terminal and CI get more: `logsite trace <trace_id>` (one request across services),
+The terminal and CI get more: `logsite errors` (production errors grouped by cause),
+`logsite trace <trace_id>` (one request across services),
 `logsite leaks`, `logsite cost`, `logsite spikes --since-deploy v1.4`, and an MCP server for AI
 assistants. See the [project README](https://github.com/rajpaynaik/logsite#readme).
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from ..context import mentions
 from ..matching import Matcher
 from ..models import LogRecord, LogSite, Usage, parse_iso
+from ..tracebacks import is_error
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,14 @@ class LogBackend(ABC):
         """
         records = self.query_logs(time_range, contains=value, limit=limit)
         return [r for r in records if mentions(r, field, value)]
+
+    def query_errors(self, time_range: TimeRange, limit: int = 5000) -> list[LogRecord]:
+        """Error records (error level, or carrying an exception) in ``time_range``.
+
+        The default filters :meth:`query_logs` client-side, so other lines count towards
+        ``limit``. Backends that can filter server-side override this.
+        """
+        return [r for r in self.query_logs(time_range, limit=limit) if is_error(r)]
 
     def usage_by_line(
         self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000
@@ -114,14 +124,32 @@ def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
         except json.JSONDecodeError:
             data = None
         if isinstance(data, dict) and isinstance(data.get("record"), dict):
-            return _loguru_record(data["record"], raw, timestamp)
+            # The traceback is only in "text", loguru's formatted line.
+            return _loguru_record({**data["record"], "_text": data.get("text")}, raw, timestamp)
         if isinstance(data, dict):
             message = next(
                 (str(data[k]) for k in ("message", "msg", "event", "log") if k in data), raw
             )
             ts = timestamp or _parse_ts(data.get("timestamp") or data.get("time") or data.get("ts"))
             return LogRecord(timestamp=ts, message=message, fields=data, size=_size(raw))
-    return LogRecord(timestamp=timestamp, message=raw, size=_size(raw))
+    return LogRecord(timestamp=timestamp or _leading_ts(raw), message=raw, size=_size(raw))
+
+
+# "2026-10-14 10:00:05,123 ERROR ...": logging's default asctime, or ISO 8601.
+_LEADING_TS = re.compile(
+    r"^\[?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{3}(?:\d{3})?)?(?:Z|[+-]\d{2}:\d{2})?)"
+)
+
+
+def _leading_ts(raw: str) -> datetime | None:
+    """The timestamp a plain-text line starts with, if any (naive means UTC)."""
+    m = _LEADING_TS.match(raw)
+    if not m:
+        return None
+    try:
+        return parse_iso(m.group(1).replace(",", "."))
+    except ValueError:
+        return None
 
 
 def _loguru_record(rec: dict, raw: str, timestamp: datetime | None) -> LogRecord:
@@ -132,8 +160,13 @@ def _loguru_record(rec: dict, raw: str, timestamp: datetime | None) -> LogRecord
     level = rec.get("level") if isinstance(rec.get("level"), dict) else {}
     time = rec.get("time") if isinstance(rec.get("time"), dict) else {}
     extra = rec.get("extra") if isinstance(rec.get("extra"), dict) else {}
+    exception = rec.get("exception") if isinstance(rec.get("exception"), dict) else {}
+    text = rec.get("_text") if isinstance(rec.get("_text"), str) else ""
     fields = {
         **extra,
+        "exc_type": exception.get("type"),
+        "exc_message": exception.get("value"),
+        "exc_text": text if "Traceback (most recent call last):" in text else None,
         "pathname": file.get("path") or file.get("name"),
         "filename": file.get("name"),
         "lineno": rec.get("line"),

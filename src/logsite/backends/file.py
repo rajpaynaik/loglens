@@ -6,6 +6,7 @@ from datetime import timezone
 from pathlib import Path
 
 from ..models import LogRecord
+from ..tracebacks import is_error, join_multiline
 from .base import LogBackend, TimeRange, parse_line
 
 
@@ -18,12 +19,26 @@ class FileBackend(LogBackend):
     def query_logs(
         self, time_range: TimeRange, contains: str | None = None, limit: int = 5000
     ) -> list[LogRecord]:
+        return self._read(time_range, contains, limit)
+
+    def query_errors(self, time_range: TimeRange, limit: int = 5000) -> list[LogRecord]:
+        return self._read(time_range, None, limit, errors_only=True)
+
+    def _read(
+        self,
+        time_range: TimeRange,
+        contains: str | None,
+        limit: int,
+        errors_only: bool = False,
+    ) -> list[LogRecord]:
         out: list[LogRecord] = []
         with self.path.open(encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
+            for raw in join_multiline(fh):  # a multi-line traceback is one event
                 if not raw.strip() or (contains and contains not in raw):
                     continue
                 record = parse_line(raw)
+                if errors_only and not is_error(record):
+                    continue
                 ts = record.timestamp
                 if ts is not None:
                     if ts.tzinfo is None:
