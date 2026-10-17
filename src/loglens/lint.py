@@ -12,9 +12,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .context import detect_injected, satisfied
+from .context import detect_injected, measure_coverage, satisfied
 from .index import index_calls, iter_python_files
-from .models import Diagnostic, LogSite
+from .models import Diagnostic, LogRecord, LogSite
 
 RULES: dict[str, str] = {
     "LL001": "eager string formatting in log call",
@@ -28,6 +28,7 @@ RULES: dict[str, str] = {
     "LL101": "log line never emitted",
     "LL102": "log line spiked compared with the previous window",
     "LL104": "log level doesn't match what the line does in production",
+    "LL105": "required context missing from production records",
 }
 
 DEFAULT_PII_PATTERN = (
@@ -68,6 +69,8 @@ class ContextRules:
     near_dependency: list[str] = field(default_factory=list)
     injected: set[str] = field(default_factory=set)  # declared: added outside the code
     detect: bool = True  # scan the project for filters / contextvars / OpenTelemetry
+    min_coverage: float = 0.95  # LL105: share of production records that must carry a field
+    min_records: int = 20  # LL105: ignore lines with fewer sampled records
     detected: dict[str, list[str]] = field(default_factory=dict)  # filled in at lint time
 
     @property
@@ -91,7 +94,7 @@ class ContextRules:
 
     @classmethod
     def from_dict(cls, data: Mapping) -> ContextRules:
-        unknown = set(data) - {*SITUATIONS, "injected", "detect"}
+        unknown = set(data) - {*SITUATIONS, "injected", "detect", "min_coverage", "min_records"}
         if unknown:
             raise ValueError(f"unknown [context] key(s) {sorted(unknown)}")
         return cls(
@@ -101,6 +104,8 @@ class ContextRules:
             near_dependency=list(data.get("near_dependency", [])),
             injected=set(data.get("injected", [])),
             detect=bool(data.get("detect", True)),
+            min_coverage=float(data.get("min_coverage", 0.95)),
+            min_records=int(data.get("min_records", 20)),
         )
 
 
@@ -125,6 +130,17 @@ class LintConfig:
             return None
         m = re.search(self.failure_pattern, _NOT_A_FAILURE.sub(" ", text), re.IGNORECASE)
         return m.group(0) if m else None
+
+    def required_context(self, site: LogSite) -> list[tuple[str, str]]:
+        """``(field, situation)`` pairs a call must carry: ``required_fields`` + ``[context]``."""
+        out = [(f, "all") for f in self.required_fields] + self.context.required(site)
+        seen: set[str] = set()
+        return [(f, why) for f, why in out if not (f in seen or seen.add(f))]
+
+    def needs_samples(self) -> bool:
+        """Whether volume linting should fetch records (LL104, or LL105 with rules set)."""
+        context = self.required_fields or self.context.active
+        return self.enabled("LL104") or (self.enabled("LL105") and bool(context))
 
     def enabled(self, code: str) -> bool:
         return code in self.select and code not in self.ignore
@@ -309,10 +325,9 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
         keys = _extra_keys(call)
         if keys is not None:
             rules = cfg.context
-            required = [(f, "all") for f in cfg.required_fields] + rules.required(site)
             have = keys | rules.available()
             missing: dict[str, str] = {}
-            for f, why in required:
+            for f, why in cfg.required_context(site):
                 if not satisfied(f, have):
                     missing.setdefault(f, why)
             if missing:
@@ -371,12 +386,12 @@ def lint_volume(
     cfg: LintConfig | None = None,
     window: str = "24h",
     previous: Mapping[str, int] | None = None,
-    samples: Mapping[str, Sequence[str]] | None = None,
+    samples: Mapping[str, Sequence[LogRecord]] | None = None,
 ) -> list[Diagnostic]:
     """Rules that need production counts from a backend.
 
     ``previous`` holds counts for the window just before the current one; LL102 needs it.
-    ``samples`` holds recent rendered messages per site id; LL104's message check needs it.
+    ``samples`` holds recent records per site id; LL104 and LL105 need it.
     """
     cfg = cfg or LintConfig()
     out: list[Diagnostic] = []
@@ -418,7 +433,42 @@ def lint_volume(
                 )
         if cfg.enabled("LL104"):
             out.extend(_severity_in_production(site, n, cfg, window, samples))
+        if cfg.enabled("LL105") and samples:
+            out.extend(_context_in_production(site, cfg, samples))
     return out
+
+
+def _context_in_production(
+    site: LogSite, cfg: LintConfig, samples: Mapping[str, Sequence[LogRecord]]
+) -> list[Diagnostic]:
+    rules = cfg.context
+    records = samples.get(site.id, [])
+    if len(records) < rules.min_records:
+        return []
+    coverage = measure_coverage([site], {site.id: records}, cfg.required_context)
+    low = [c for c in coverage.get(site.id, []) if c.ratio < rules.min_coverage]
+    if not low:
+        return []
+    parts = []
+    for c in low:
+        why = "" if c.situation == "all" else f" ({SITUATIONS[c.situation]})"
+        parts.append(f"{c.field} {c.ratio:.0%}{why}")
+    injected = [c.field for c in low if satisfied(c.field, rules.available())]
+    hint = (
+        f"; {', '.join(injected)} is meant to be added automatically, but that setup "
+        "doesn't reach this code path"
+        if injected
+        else ""
+    )
+    return [
+        _diag(
+            site,
+            "LL105",
+            f"in {len(records)} sampled production records, required context is often missing: "
+            f"{', '.join(parts)}{hint}. Context is usually lost in threads, async tasks, "
+            "background jobs or a handler without the filter",
+        )
+    ]
 
 
 def _severity_in_production(
@@ -426,7 +476,7 @@ def _severity_in_production(
     n: int,
     cfg: LintConfig,
     window: str,
-    samples: Mapping[str, Sequence[str]] | None,
+    samples: Mapping[str, Sequence[LogRecord]] | None,
 ) -> list[Diagnostic]:
     if site.level in ERROR_LEVELS and n >= cfg.error_noisy_threshold:
         return [
@@ -439,7 +489,7 @@ def _severity_in_production(
                 severity="info",
             )
         ]
-    messages = (samples or {}).get(site.id)
+    messages = [r.message for r in (samples or {}).get(site.id, [])]
     if site.level in LOW_LEVELS and messages and not cfg.failure_word(site.template):
         words = [w for w in map(cfg.failure_word, messages) if w]
         if words:

@@ -16,13 +16,14 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .backends import LogBackend, TimeRange, from_config
 from .config import Config
+from .context import detect_injected, measure_coverage, overall_coverage, satisfied
 from .cost import monthly_costs
 from .deploys import compare_deploy, resolve_deploy
 from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
-from .matching import sample_messages
+from .matching import sample_records
 from .models import LogSite, parse_iso
 
 INSTRUCTIONS = """\
@@ -32,9 +33,10 @@ After a release, start with `compare_deploy` (a git tag or sha): it reports line
 spiked or started erroring since the deploy, with the release's commits that touched them.
 Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one
 of them to see which commits changed the surrounding code. `lint` finds log-quality problems
-(rules: `list_rules`). `log_costs` ranks log calls by monthly spend. `find_leaks` finds
-secrets and personal data that actually reached production logs; sample values are masked,
-so don't try to reconstruct them.
+(rules: `list_rules`). `log_costs` ranks log calls by monthly spend.
+`context_coverage` shows which required context fields production records actually carry.
+`find_leaks` finds secrets and personal data that actually reached production logs; sample
+values are masked, so don't try to reconstruct them.
 Tools that need production data fail if no backend is configured.
 """
 
@@ -112,9 +114,9 @@ def build_server(cfg: Config) -> MCPServer:
             now = counts(b, all_sites, current)
             before = counts(b, all_sites, current.previous()) if cfg.lint.enabled("LL102") else None
             samples = None
-            if cfg.lint.enabled("LL104"):
+            if cfg.lint.needs_samples():
                 try:
-                    samples = sample_messages(all_sites, b.query_logs(current))
+                    samples = sample_records(all_sites, b.query_logs(current))
                 except Exception as exc:
                     raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
             diags += lint_volume(
@@ -281,6 +283,49 @@ def build_server(cfg: Config) -> MCPServer:
                     "samples": {k: asdict(f) for k, f in e.samples.items()},
                 }
                 for e in leaks
+            ],
+        }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def context_coverage(hours: float | None = None, limit: int = 5000) -> dict[str, Any]:
+        """How often production records actually carry the context fields the project
+        requires ([context] in loglens.toml: request_id, tenant_id, ...), overall and per log
+        call. Low coverage on a field that's added automatically means that setup doesn't run
+        on some code paths (threads, async tasks, background jobs).
+        """
+        rules = cfg.lint.context
+        all_sites, b = sites(), backend()
+        if rules.detect:
+            rules.detected = detect_injected(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+        try:
+            records = b.query_logs(TimeRange.last(hours or window_default), limit=limit)
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        per_site = measure_coverage(
+            all_sites, sample_records(all_sites, records), cfg.lint.required_context
+        )
+        return {
+            "min_coverage": rules.min_coverage,
+            "fields": [
+                {
+                    "field": c.field,
+                    "coverage": round(c.ratio, 4),
+                    "records": c.total,
+                    "added_automatically": satisfied(c.field, rules.available()),
+                }
+                for c in overall_coverage(per_site)
+            ],
+            "gaps": [
+                {
+                    "id": sid,
+                    "field": c.field,
+                    "situation": c.situation,
+                    "coverage": round(c.ratio, 4),
+                    "records": c.total,
+                }
+                for sid, cov in per_site.items()
+                for c in cov
+                if c.ratio < rules.min_coverage and c.total >= rules.min_records
             ],
         }
 

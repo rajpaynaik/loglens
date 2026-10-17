@@ -12,14 +12,14 @@ from pathlib import Path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
-from .context import detect_injected
+from .context import detect_injected, measure_coverage, overall_coverage, satisfied
 from .cost import format_bytes, format_money, monthly_costs
 from .deploys import compare_deploy, resolve_deploy
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import KINDS, find_leaks
 from .lint import RULES, SITUATIONS, describe_trend, find_spikes, lint_paths, lint_volume
-from .matching import sample_messages
+from .matching import sample_records
 from .models import parse_iso
 
 
@@ -61,8 +61,8 @@ def cmd_lint(args: argparse.Namespace, cfg: Config) -> int:
             backend.count_by_line(sites, current.previous()) if cfg.lint.enabled("LL102") else None
         )
         samples = None
-        if cfg.lint.enabled("LL104"):
-            samples = sample_messages(sites, backend.query_logs(current))
+        if cfg.lint.needs_samples():
+            samples = sample_records(sites, backend.query_logs(current))
         diags += lint_volume(
             sites,
             counts,
@@ -113,7 +113,39 @@ def cmd_context(args: argparse.Namespace, cfg: Config) -> int:
         print(f"  {n:>5}  {part}")
     if diags and not args.quiet:
         print("\n`loglens lint` lists each call site (LL006)")
+    if args.production:
+        return _production_coverage(args, cfg, sites) or (1 if diags else 0)
     return 1 if diags else 0
+
+
+def _production_coverage(args: argparse.Namespace, cfg: Config, sites) -> int:
+    backend = _backend_or_exit(cfg)
+    hours = args.hours or cfg.window_hours
+    rules = cfg.lint.context
+    samples = sample_records(sites, backend.query_logs(TimeRange.last(hours), limit=args.limit))
+    per_site = measure_coverage(sites, samples, cfg.lint.required_context)
+    scanned = sum(len(v) for v in samples.values())
+    print(f"\nIn production (last {hours:g}h, {scanned:,} sampled record(s)):")
+    if not per_site:
+        print("  no sampled records for log calls that require context")
+        return 0
+    for c in overall_coverage(per_site):
+        auto = " (added automatically)" if satisfied(c.field, rules.available()) else ""
+        print(f"  {c.field:<17} {c.ratio:>5.0%} of {c.total:,} record(s){auto}")
+    gaps = sorted(
+        (
+            (sid, c)
+            for sid, cov in per_site.items()
+            for c in cov
+            if c.ratio < rules.min_coverage and c.total >= rules.min_records
+        ),
+        key=lambda t: (t[1].ratio, -t[1].total),
+    )
+    if gaps:
+        print(f"\nLog calls below {rules.min_coverage:.0%} (with >= {rules.min_records} records):")
+        for sid, c in gaps[: args.top]:
+            print(f"  {c.ratio:>5.0%}  {c.field:<15} {sid}  ({c.present}/{c.total})")
+    return 1 if gaps else 0
 
 
 def cmd_counts(args: argparse.Namespace, cfg: Config) -> int:
@@ -379,6 +411,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("context", help="required context fields and what's added automatically")
     p.add_argument("-q", "--quiet", action="store_true")
+    p.add_argument(
+        "--production", action="store_true", help="also measure coverage in production records"
+    )
+    p.add_argument("--hours", type=float)
+    p.add_argument("--limit", type=int, default=5000, help="records to sample (default 5000)")
+    p.add_argument("--top", type=int, default=20)
     p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("counts", help="show production log counts per line")

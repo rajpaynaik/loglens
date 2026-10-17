@@ -37,6 +37,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 | LL101 | Warning/error line never seen in production *(needs a backend)* |
 | LL102 | Line spiked: ≥ `spike_ratio`× the previous window and ≥ `spike_min_count` emits *(needs a backend)* |
 | LL104 | Level doesn't match production: `info` lines whose real messages look like failures, or `error` lines firing constantly *(needs a backend)* |
+| LL105 | Required context missing from production records: e.g. `request_id` in only 71% of a line's real records *(needs a backend)* |
 
 ## Install
 
@@ -52,6 +53,7 @@ cd examples/demo_app
 loglens index              # list every log call
 loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
 loglens context            # required context fields, and what's already added automatically
+loglens context --production   # how often real records actually carry them, per log call
 loglens counts             # production counts per line, from the configured backend
 loglens cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
 loglens lint --volume      # static + volume rules
@@ -95,6 +97,8 @@ error = ["tenant_id", "user_id"]    # who was affected
 in_retry = ["attempt"]              # retry loops, @retry / @backoff functions
 near_dependency = ["dependency"]    # except blocks around HTTP / DB / client calls
 injected = ["trace_id"]             # added outside the code, e.g. by your log shipper
+# min_coverage = 0.95               # LL105: share of production records that must carry a field
+# min_records = 20                  # LL105: skip lines with fewer sampled records
 
 [cost]
 price_per_gb = 0.50                 # what your log store charges per GB ingested
@@ -151,6 +155,7 @@ All tools are read-only:
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
 | `log_costs` | Which log calls cost the most per month? |
+| `context_coverage` | Which required context fields are missing from real records, and on which log calls? |
 | `find_leaks` | Which log calls are writing secrets or personal data to production logs? |
 | `log_counts` | Which log calls are the loudest in production? |
 | `lint` | Which log calls have quality problems (optionally including volume rules)? |
@@ -216,6 +221,25 @@ that sets `record.request_id`, structlog `bind_contextvars(...)` or processors,
 satisfies `trace_id` / `span_id`). Common spellings count as the same field
 (`requestId`, `correlation_id`). `loglens context` shows the rules, what was found and where,
 and how many log calls are missing what.
+
+Code can look right and still lose context: a filter that only some handlers have, a
+thread or async task that doesn't copy the context, a background job with no request.
+`loglens context --production` checks what real records carry:
+
+```
+In production (last 24h, 115 sampled record(s)):
+  tenant_id           33% of 30 record(s)
+  request_id          52% of 115 record(s) (added automatically)
+
+Log calls below 95% (with >= 20 records):
+     0%  request_id      app/orders.py:14  (0/30)
+    33%  tenant_id       app/orders.py:14  (10/30)
+    71%  request_id      app/orders.py:7  (60/85)
+```
+
+Fields count wherever they appear in a record, nested (`ctx.tenant_id`) or under a common
+synonym. Placeholder values (`""`, `"-"`, `null`) count as missing. LL105 reports the same
+gaps in `lint --volume`.
 
 ## Severity checks
 
@@ -316,7 +340,7 @@ class LogBackend(ABC):
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
-- [ ] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
+- [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
 - [ ] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
 - [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
 

@@ -60,18 +60,18 @@ class Matcher:
         return None
 
 
-def sample_messages(
-    sites: Iterable[LogSite], records: Iterable[LogRecord], per_site: int = 50
-) -> dict[str, list[str]]:
-    """Up to ``per_site`` rendered messages for each site, from a batch of records."""
+def sample_records(
+    sites: Iterable[LogSite], records: Iterable[LogRecord], per_site: int = 200
+) -> dict[str, list[LogRecord]]:
+    """Up to ``per_site`` records for each site, from a batch of records."""
     matcher = Matcher(sites)
-    out: dict[str, list[str]] = {}
+    out: dict[str, list[LogRecord]] = {}
     for record in records:
         site = matcher.match(record)
         if site is not None:
-            messages = out.setdefault(site.id, [])
-            if len(messages) < per_site:
-                messages.append(record.message)
+            sample = out.setdefault(site.id, [])
+            if len(sample) < per_site:
+                sample.append(record)
     return out
 
 

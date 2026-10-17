@@ -1,5 +1,5 @@
-"""Find context fields a project adds to every log automatically, so LL006 doesn't ask for
-them on each call.
+"""Context fields: which ones a project adds to every log automatically (so LL006 doesn't
+ask for them on each call), and how many production records actually carry them.
 
 Recognised: logging filters / record factories that set ``record.<field>``, structlog
 ``bind_contextvars(...)`` / ``.bind(...)`` and processors that set ``event_dict["<field>"]``,
@@ -9,10 +9,12 @@ Recognised: logging filters / record factories that set ``record.<field>``, stru
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .index import DEFAULT_EXCLUDES, iter_python_files
+from .models import LogRecord, LogSite
 
 # Names that mean the same field; satisfying one satisfies the others.
 SYNONYMS = [
@@ -131,3 +133,68 @@ def detect_injected(
         for field, where in detect_in_source(text, rel).items():
             found.setdefault(field, []).extend(where)
     return found
+
+
+_EMPTY = {"", "-", "null", "none", "nil", "undefined", "unknown"}
+
+
+def _keys(fields: dict, prefix: str = "") -> Iterable[tuple[str, object]]:
+    for key, value in fields.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            yield from _keys(value, f"{name}.")
+        else:
+            yield name, value
+
+
+def has_field(record: LogRecord, field: str) -> bool:
+    """Whether the record carries a non-empty ``field`` (or a synonym), at any nesting."""
+    names = aliases(field)
+    for key, value in _keys(record.fields):
+        if (key in names or key.rsplit(".", 1)[-1] in names) and value is not None:
+            if not (isinstance(value, str) and value.strip().lower() in _EMPTY):
+                return True
+    return False
+
+
+@dataclass
+class FieldCoverage:
+    field: str
+    situation: str  # why it's required: all | error | in_retry | near_dependency
+    present: int = 0
+    total: int = 0
+
+    @property
+    def ratio(self) -> float:
+        return self.present / self.total if self.total else 1.0
+
+
+def measure_coverage(
+    sites: Iterable[LogSite],
+    samples: Mapping[str, Sequence[LogRecord]],
+    required: Callable[[LogSite], list[tuple[str, str]]],
+) -> dict[str, list[FieldCoverage]]:
+    """``{site.id: [FieldCoverage, ...]}`` for every sampled site that requires fields."""
+    out: dict[str, list[FieldCoverage]] = {}
+    for site in sites:
+        records = samples.get(site.id)
+        fields = required(site)
+        if not records or not fields:
+            continue
+        cov = [FieldCoverage(f, why, total=len(records)) for f, why in fields]
+        for record in records:
+            for c in cov:
+                c.present += has_field(record, c.field)
+        out[site.id] = cov
+    return out
+
+
+def overall_coverage(per_site: Mapping[str, list[FieldCoverage]]) -> list[FieldCoverage]:
+    """Coverage per field across every record that requires it, worst first."""
+    totals: dict[str, FieldCoverage] = {}
+    for cov in per_site.values():
+        for c in cov:
+            t = totals.setdefault(c.field, FieldCoverage(c.field, c.situation))
+            t.present += c.present
+            t.total += c.total
+    return sorted(totals.values(), key=lambda c: c.ratio)

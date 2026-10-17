@@ -1,3 +1,4 @@
+from loglens.backends import parse_line
 from loglens.index import index_source
 from loglens.lint import LintConfig, lint_source, lint_volume
 
@@ -134,9 +135,12 @@ def test_severity_rule_ll104():
     cfg = LintConfig(error_noisy_threshold=1000)
     counts = {"p.py:1": 5000, "p.py:2": 10, "p.py:3": 10, "p.py:4": 10}
     samples = {
-        "p.py:2": ["payment ok", "payment failed: card declined", "payment ok"],
-        "p.py:3": ["payment failed 1"],  # template already says failed: that's LL007's job
-        "p.py:4": ["status ok", "status 0 errors"],  # "0 errors" isn't a failure
+        sid: [parse_line(m) for m in messages]
+        for sid, messages in {
+            "p.py:2": ["payment ok", "payment failed: card declined", "payment ok"],
+            "p.py:3": ["payment failed 1"],  # template already says failed: that's LL007's job
+            "p.py:4": ["status ok", "status 0 errors"],  # "0 errors" isn't a failure
+        }.items()
     }
     diags = [d for d in lint_volume(sites, counts, cfg, samples=samples) if d.code == "LL104"]
     assert [d.line for d in diags] == [1, 2]
