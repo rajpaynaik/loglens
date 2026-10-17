@@ -34,6 +34,12 @@ Example ``logsite.toml``::
     ignore = ["email"]               # detector kinds to skip
     allow = ['@example\\.com$']       # regexes for values that are fine (test data)
 
+    [pipeline]                       # logsite pipeline: Alloy drop / sample rules
+    drop = ["app/health.py:12"]
+    sample = { "app/api.py:88" = 0.01 }   # keep 1 in 100
+    max_per_window = 100000          # sample any line above this down to it
+    drop_levels = ["debug"]
+
     [cost]                           # logsite cost, $/mo in the editor
     price_per_gb = 0.50              # what your log store charges per GB ingested
     price_per_million_events = 0     # per-event indexing charges, if any
@@ -56,6 +62,7 @@ else:  # pragma: no cover
 from .cost import CostConfig
 from .leaks import LeakConfig
 from .lint import LintConfig
+from .pipeline import PipelineConfig
 
 
 @dataclass
@@ -73,6 +80,7 @@ class Config:
     leaks: LeakConfig = field(default_factory=LeakConfig)
     cost: CostConfig = field(default_factory=CostConfig)
     timeline: TimelineConfig = field(default_factory=TimelineConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     window_hours: float = 24.0
     excludes: list[str] = field(default_factory=list)
 
@@ -157,6 +165,7 @@ def load_config(start: str | Path | None = None) -> Config:
             service=timeline.get("service") or root.name,
             backend=timeline_backend,
         ),
+        pipeline=PipelineConfig.from_dict(data.get("pipeline", {})),
         window_hours=float(data.get("window_hours", 24)),
         excludes=list(data.get("exclude", [])),
     )

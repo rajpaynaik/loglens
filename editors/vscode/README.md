@@ -12,7 +12,8 @@ logsite maps production logs back to the exact line that wrote them, for Python'
 **structlog** and **loguru**, reading from **Loki**, **OpenSearch / Elasticsearch**,
 **CloudWatch Logs** or a log file.
 
-> **Preview.** Python codebases only, for now.
+> **Preview.** Python codebases only, for now. Java, JavaScript/TypeScript and Go are
+> [planned](https://github.com/rajpaynaik/logsite#other-languages).
 
 ## Features
 

@@ -7,6 +7,7 @@ are the first suspects. Everything here shells out to ``git``; no extra dependen
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -114,6 +115,27 @@ def line_history(
         args.append(revs)
     out = _git(root, *args)
     return parse_log(out) if out is not None else []
+
+
+def source_url(root: str | Path, remote: str = "origin") -> str | None:
+    """A link template for a source line on the code host, with ``{ref}``, ``{path}`` and
+    ``{line}`` placeholders, from the remote's URL (GitHub, GitLab, Bitbucket). None if
+    there's no such remote or the host is unknown."""
+    out = _git(root, "remote", "get-url", remote)
+    if not out:
+        return None
+    url = out.strip().removesuffix(".git")
+    m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+)$", url)
+    if m:
+        url = f"https://{m.group(1)}/{m.group(2)}"
+    url = re.sub(r"^https?://[^@/]+@", "https://", url)  # drop credentials
+    if not url.startswith(("https://", "http://")):
+        return None
+    if "gitlab" in url:
+        return url + "/-/blob/{ref}/{path}#L{line}"
+    if "bitbucket" in url:
+        return url + "/src/{ref}/{path}#lines-{line}"
+    return url + "/blob/{ref}/{path}#L{line}"  # GitHub, Gitea, and most others
 
 
 def resolve_ref(root: str | Path, ref: str) -> str | None:

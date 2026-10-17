@@ -14,7 +14,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 
 > Formerly **loglens**: existing `loglens.toml` / `[tool.loglens]` configs keep working.
 >
-> Status: **pre-alpha**. Python codebases only, for now. Feedback and contributors welcome.
+> Status: **pre-alpha**. Python codebases only, for now; Java, JavaScript/TypeScript and Go are on the [roadmap](#other-languages). Feedback and contributors welcome.
 
 ## Features
 
@@ -23,6 +23,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `logsite cost` in the terminal), so you fix the few lines that make up most of the bill.
 - **Error summary**: `logsite errors` turns thousands of production errors and tracebacks into a short list of groups, new and spiking ones first, each with where it was raised in your code, the log call that logged it, and a sample trace id. In the editor, the line that raised an error shows how often it did. See [Error summary](#error-summary).
+- **Grafana and Alloy**: `logsite grafana` writes a Grafana dashboard of log cost and errors per code line, live from Loki, with each row linked to its source line; `logsite pipeline` writes Grafana Alloy rules that drop or sample the noisy lines before they're shipped. See [Grafana and Alloy](#grafana-and-alloy).
 - **Request timeline**: `logsite trace <trace_id>` shows every log line for one request across services, in order, with this repo's lines linked to the code that wrote them and the first warning flagged as a likely cause.
 - **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `logsite spikes` lists the lines that jumped, with the commits that likely caused it.
@@ -67,6 +68,8 @@ logsite spikes             # lines that jumped vs the previous window, with susp
 logsite spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
 logsite errors             # production errors grouped by cause, new and spiking first
 logsite errors --since-deploy v1.4.0   # what started failing after a release
+logsite pipeline --max-per-window 100000 --drop-level debug -o logsite.alloy   # Alloy drop/sample rules
+logsite grafana -o dashboard.json   # Grafana dashboard: cost and errors per code line (Loki)
 logsite history app/checkout.py:7   # commits that touched the code around a log line
 logsite leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
 logsite trace 4bf92f35...  # every log line for one request, across services, in order
@@ -390,6 +393,80 @@ In the editor, the line that raised an error gets a code lens
 lists them too. The MCP tool `error_summary` gives an AI assistant the same groups, with
 trace ids to pass to `request_timeline`.
 
+## Grafana and Alloy
+
+### Dashboard: cost and errors per code line
+
+```bash
+logsite grafana --uid checkout-logs -o dashboard.json
+```
+
+Import it in Grafana (Dashboards → New → Import) and pick your Loki data source. It queries
+Loki directly, so it stays live:
+
+- **Totals**: volume, lines, estimated cost per month (the price per GB is a dashboard
+  variable you can change) and error lines.
+- **Cost by code line**: every log call, most expensive first, shown with its message
+  (`app/api.py:88  info('request %s %s')`) and linked to that line on GitHub, GitLab or
+  Bitbucket at the current commit.
+- **Errors by code line**, compared with the same range just before; the **loudest log
+  calls** over time; **recent errors**.
+
+logsite works out the rest from the code and a sample of records: the deployed path prefix to
+strip (`/srv/` in `/srv/app/api.py`), the level field, and the link to the code host from
+the git remote. It needs records with file and line fields (as for `aggregate = true`).
+Message templates are baked in, so regenerate it when log calls change.
+
+`logsite grafana --generic` writes a version for any project, with the selector, fields and
+code link as dashboard variables instead; it's in
+[`integrations/grafana`](integrations/grafana) for the grafana.com catalog.
+
+### Alloy rules: drop or sample noisy lines before they're shipped
+
+```bash
+logsite pipeline --max-per-window 100000 --drop-level debug -o logsite.alloy
+```
+
+writes a Grafana Alloy `loki.process` component with one rule per log call, sized from real
+volume and priced like `logsite cost`:
+
+```alloy
+  // app/api.py:88  info('request %s %s')
+  // keep 1% (9,100,000 per 24h, over 100,000): saves 3.4 TB/month ($1,706)
+  stage.match {
+    selector = "{logsite_site=~\"(.*/)?app/api[.]py:88\"}"
+
+    stage.sampling {
+      rate                = 0.011
+      drop_counter_reason = "logsite"
+    }
+  }
+```
+
+- Rules come from `[pipeline]` (`drop`, `sample`) and from volume: lines above
+  `max_per_window` are sampled down to it, and lines at a `drop_levels` level are dropped.
+- **Warning and error lines never get a rule**, whatever the config says.
+- Lines are matched by the file and line fields records carry, through a temporary label
+  that's removed before anything reaches Loki. Records without them are matched by message
+  (`match = "template"`, with your stream `selector`); those rules never touch lines that
+  look like errors, and messages with too little fixed text get no rule.
+- Wire it in with `forward_to = [loki.process.logsite.receiver]` in your source; logs go on
+  to `forward_to` in `[pipeline]` (default `loki.write.default.receiver`).
+
+Checked against Alloy 1.20 and Loki: of 2,530 lines, the noisy line was kept at 1 in 10, the
+debug line dropped, and all 30 error lines kept.
+
+```toml
+[pipeline]
+drop = ["app/health.py:12"]
+sample = { "app/api.py:88" = 0.01 }   # keep 1 in 100
+max_per_window = 100000
+drop_levels = ["debug"]
+# match = "auto"                    # location | template
+# selector = '{app="checkout"}'     # template rules: the stream as Alloy sees it
+# forward_to = "loki.write.default.receiver"
+```
+
 ## Following a request
 
 A failed checkout is hard to read service by service: the gateway returns a 504, checkout
@@ -482,18 +559,40 @@ class LogBackend(ABC):
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
 - [x] structlog and loguru: indexing, library-aware lint rules and quick fixes, loguru JSON parsing
-- [ ] Other languages: Go `slog`, Java SLF4J, Node pino
 - [x] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `logsite cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 - [x] Deploy-aware comparison: `logsite spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [x] Error summary: production errors grouped by cause (`logsite errors`, the `error_summary` MCP tool, and a code lens on the line that raised), new and spiking first, with `--since-deploy`
+- [x] Grafana dashboard generator: `logsite grafana` writes a dashboard of log cost and errors per code line from Loki, with source links
+- [x] Grafana Alloy rules: `logsite pipeline` drops or samples noisy log calls before they're shipped, sized and priced from production volume
+- [ ] Grafana app plugin: the same views as pages inside Grafana, listed in the plugin catalog
+- [ ] Incident investigation: `logsite investigate <error group>` and an MCP tool that gather the evidence for one error in a single call: when it started and the deploy just before, commits in that release touching the code where it's raised, other errors that started at the same time, affected services / tenants, and a few full request timelines
+- [ ] CI gate after a deploy: `logsite errors --since-deploy <ref> --fail-on-new` exits non-zero when new error groups appear, to stop or roll back a bad release
 - [ ] More MCP tools for incident investigation: recent messages for a line, so AI assistants can do root-cause analysis on logsite data
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
 - [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
 - [x] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
 - [x] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
+
+### Other languages
+
+Today logsite reads Python code. The parts that read production logs (backends, matching by
+file and line, error grouping, timelines, cost, leaks) don't depend on the language; each
+language needs an indexer for its log calls, lint rules that fit its loggers, and a stack
+trace parser.
+
+- [ ] **Java**: SLF4J / Logback / Log4j 2 (`log.info("order {} failed", id)`), including
+  Lombok `@Slf4j`; MDC context; Java stack traces (`at com.acme.Checkout.charge(Checkout.java:42)`,
+  `Caused by:`) for the error summary; JSON layouts (logstash-logback-encoder, ECS)
+- [ ] **JavaScript / TypeScript**: pino, winston, bunyan and `console.*` in Node; child
+  loggers (`logger.child({ requestId })`); Node stack traces (`at charge (src/checkout.ts:42:7)`),
+  with source maps to map built JavaScript back to TypeScript lines
+- [ ] **Go**: `log/slog`, zap, zerolog and logrus (`slog.Info("order failed", "order_id", id)`);
+  `context.Context`-carried fields; Go panics and goroutine traces for the error summary
+- [ ] Editor support for each language through the same language server (VS Code activates
+  on `.java`, `.js`/`.ts`, `.go` files)
 
 ## Contributing
 
