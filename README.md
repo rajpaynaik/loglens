@@ -191,6 +191,9 @@ class LogBackend(ABC):
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
 - [ ] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
+- [ ] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release (git tags or deploy markers) instead of a rolling window
+- [ ] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
+- [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 
 ## Contributing
 
