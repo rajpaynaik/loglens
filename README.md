@@ -189,6 +189,8 @@ class LogBackend(ABC):
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
+- [ ] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
+- [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 
 ## Contributing
 
