@@ -141,7 +141,15 @@ server = LoglensServer()
 @server.feature(types.INITIALIZED)
 def on_initialized(ls: LoglensServer, params: types.InitializedParams) -> None:
     root = ls.workspace.root_path or str(Path.cwd())
-    ls.cfg = load_config(root)
+    try:
+        ls.cfg = load_config(root)
+    except ValueError as exc:
+        ls.window_show_message(
+            types.ShowMessageParams(
+                type=types.MessageType.Error, message=f"loglens: bad config: {exc}"
+            )
+        )
+        return
     threading.Thread(target=ls.refresh_counts_forever, daemon=True).start()
 
 

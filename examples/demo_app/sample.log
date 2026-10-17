@@ -4,3 +4,4 @@
 {"timestamp": "2026-10-14T10:00:01Z", "level": "INFO", "message": "reserving item SKU-3", "pathname": "/srv/app/checkout.py", "lineno": 15}
 2026-10-14 10:00:05 ERROR app.checkout payment failed for order 42: card declined
 2026-10-14 10:00:06 INFO app.checkout charging order 43 for 500 cents
+2026-10-14 10:00:07 DEBUG app.checkout card 4111 1111 1111 1111 charged

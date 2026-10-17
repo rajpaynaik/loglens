@@ -20,6 +20,7 @@ from .config import Config
 from .deploys import compare_deploy, resolve_deploy
 from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
+from .leaks import find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
 from .models import LogSite
 
@@ -28,9 +29,11 @@ loglens maps production logs back to the Python log calls that emitted them.
 Log calls are identified as "PATH:LINE" (PATH relative to the project root).
 After a release, start with `compare_deploy` (a git tag or sha): it reports lines that
 spiked or started erroring since the deploy, with the release's commits that touched them.
-Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one of them
-to see which commits changed the surrounding code. `lint` finds log-quality problems
-(rules: `list_rules`). Tools that need production data fail if no backend is configured.
+Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one
+of them to see which commits changed the surrounding code. `lint` finds log-quality problems
+(rules: `list_rules`). `find_leaks` finds secrets and personal data that actually reached
+production logs; sample values are masked, so don't try to reconstruct them.
+Tools that need production data fail if no backend is configured.
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -206,6 +209,34 @@ def build_server(cfg: Config) -> MCPServer:
                     "commits": [_commit(x) for x in c.commits],
                 }
                 for c in report.changes
+            ],
+        }
+
+    @mcp.tool(name="find_leaks", annotations=READ_ONLY)
+    def find_leaks_tool(hours: float | None = None, limit: int = 5000) -> dict[str, Any]:
+        """Secrets (tokens, keys, passwords) and personal data (emails, card numbers, IBANs,
+        SSNs) found in production log contents, grouped by the log call that wrote them.
+
+        Scans up to `limit` recent records from the last `hours`. Sample values are masked.
+        """
+        b = backend()
+        try:
+            records = b.query_logs(TimeRange.last(hours or window_default), limit=limit)
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        leaks, scanned = find_leaks(sites(), records, cfg.leaks)
+        return {
+            "scanned": scanned,
+            "capped": scanned >= limit,
+            "leaks": [
+                {
+                    "id": e.id,
+                    "template": e.site.template if e.site else None,
+                    "records": e.records,
+                    "kinds": e.kinds,
+                    "samples": {k: asdict(f) for k, f in e.samples.items()},
+                }
+                for e in leaks
             ],
         }
 

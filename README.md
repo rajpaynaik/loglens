@@ -19,6 +19,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **Log index**: finds every `logger.*` / `logging.*` call using `ast`, including `%`-style, f-string and `.format()` templates.
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
+- **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
 
@@ -52,6 +53,7 @@ loglens lint --volume      # static + volume rules
 loglens spikes             # lines that jumped vs the previous window, with suspect commits
 loglens spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
 loglens history app/checkout.py:7   # commits that touched the code around a log line
+loglens leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
 loglens serve              # language server on stdio (used by editors)
 loglens mcp                # MCP server on stdio (used by AI assistants)
 ```
@@ -79,6 +81,11 @@ required_fields = ["trace_id"]      # enables LL006
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
+
+[leaks]
+ignore = ["email"]                  # detector kinds to skip
+allow = ['@example\.com$']          # regexes for values that are fine, e.g. test data
+ignore_fields = ["user_hash"]       # structured fields not to scan
 ```
 
 Other backends:
@@ -124,6 +131,7 @@ All tools are read-only:
 | `compare_deploy` | What spiked or started erroring after release `v1.4.0`, and which commits in it are to blame? |
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
+| `find_leaks` | Which log calls are writing secrets or personal data to production logs? |
 | `log_counts` | Which log calls are the loudest in production? |
 | `lint` | Which log calls have quality problems (optionally including volume rules)? |
 | `list_log_calls` | Where are the log calls, and what are their message templates? |
@@ -169,6 +177,29 @@ the surrounding function, so unreleased work on `main` doesn't show up.
 The deploy time defaults to the tag date (annotated tags) or the commit date. If you deploy
 later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
 
+## Leak scanning
+
+LL002 guesses from variable names (`password`, `card_number`) in the code. `loglens leaks`
+checks what really reached production: it scans the message and every structured field of
+recent log records (up to `--limit`, default 5,000) and groups findings by the log call
+that wrote them, secrets first.
+
+```
+app/checkout.py:13  1 record(s)  'card {} charged'
+    pii    card_number     x1      e.g. ************1111
+```
+
+| Kind | Detection |
+|------|-----------|
+| Secrets | AWS / GitHub / Slack / Stripe / Google keys, JWTs, `Bearer` tokens, private key blocks, `password=` / `api_key:` style values |
+| Personal data | Emails, card numbers (Luhn-checked, plus card-style grouping or a nearby word like "card"), IBANs (checksum-validated), US SSNs |
+
+Card numbers are the classic false positive: a bare 16-digit order ID passes the checksum
+1 time in 10. loglens only flags one when it is grouped like a card (`4111 1111 …`) or
+appears near a card-related word or in a card-named field.
+
+Matched values are never printed in full, so the report is safe to keep in CI logs.
+
 ## Architecture
 
 ```
@@ -205,7 +236,7 @@ class LogBackend(ABC):
 - [ ] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 - [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
-- [ ] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
+- [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 
 ## Contributing

@@ -1,4 +1,5 @@
-"""Command-line interface: ``loglens index | lint | counts | spikes | history | serve | mcp``."""
+"""Command-line interface: ``loglens index | lint | counts | spikes | history | leaks | serve |
+mcp``."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from .config import Config, load_config
 from .deploys import compare_deploy, resolve_deploy
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
+from .leaks import KINDS, find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
 
 
@@ -83,6 +85,43 @@ def cmd_counts(args: argparse.Namespace, cfg: Config) -> int:
     if not ranked:
         print(f"no matching logs in the last {hours:g}h", file=sys.stderr)
     return 0
+
+
+def cmd_leaks(args: argparse.Namespace, cfg: Config) -> int:
+    backend = _backend_or_exit(cfg)
+    sites = _sites(cfg, None)
+    hours = args.hours or cfg.window_hours
+    records = backend.query_logs(TimeRange.last(hours), limit=args.limit)
+    leaks, scanned = find_leaks(sites, records, cfg.leaks)
+    if args.format == "json":
+        out = [
+            {
+                "id": e.id,
+                "template": e.site.template if e.site else None,
+                "records": e.records,
+                "kinds": e.kinds,
+                "samples": {k: asdict(f) for k, f in e.samples.items()},
+            }
+            for e in leaks
+        ]
+        json.dump({"scanned": scanned, "leaks": out}, sys.stdout, indent=2)
+        print()
+    else:
+        for e in leaks:
+            template = f"  {e.site.template!r}" if e.site else ""
+            print(f"{e.id}  {e.records:,} record(s){template}")
+            for kind, n in sorted(e.kinds.items(), key=lambda kv: -kv[1]):
+                f = e.samples[kind]
+                where = "" if f.where == "message" else f" in field {f.where!r}"
+                print(f"    {KINDS[kind]:<6} {kind:<15} x{n:<6,} e.g. {f.masked}{where}")
+        total = sum(e.records for e in leaks)
+        capped = " (the --limit cap; raise it to scan more)" if scanned >= args.limit else ""
+        print(
+            f"\n{total:,} of {scanned:,} record(s) in the last {hours:g}h leaked secrets or "
+            f"personal data{capped}",
+            file=sys.stderr,
+        )
+    return 1 if leaks else 0
 
 
 def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
@@ -240,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=cmd_spikes)
 
+    p = sub.add_parser("leaks", help="secrets and personal data in production logs, per log call")
+    p.add_argument("--hours", type=float)
+    p.add_argument("--limit", type=int, default=5000, help="log records to scan (default 5000)")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_leaks)
+
     p = sub.add_parser("history", help="commits that touched the code around a log line")
     p.add_argument("target", metavar="PATH:LINE")
     p.add_argument("--max", type=int, default=10)
@@ -250,7 +295,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="run the MCP server on stdio").set_defaults(func=cmd_mcp)
 
     args = parser.parse_args(argv)
-    cfg = load_config(args.config_dir)
+    try:
+        cfg = load_config(args.config_dir)
+    except ValueError as exc:
+        sys.exit(f"loglens: bad config: {exc}")
     return args.func(args, cfg)
 
 

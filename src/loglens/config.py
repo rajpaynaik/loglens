@@ -13,6 +13,10 @@ Example ``loglens.toml``::
     required_fields = ["trace_id"]
     noisy_threshold = 50000
 
+    [leaks]                          # loglens leaks
+    ignore = ["email"]               # detector kinds to skip
+    allow = ['@example\\.com$']       # regexes for values that are fine (test data)
+
     window_hours = 24
 """
 
@@ -28,6 +32,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover
     import tomli as tomllib
 
+from .leaks import LeakConfig
 from .lint import LintConfig
 
 
@@ -36,6 +41,7 @@ class Config:
     root: Path
     backend: dict = field(default_factory=dict)
     lint: LintConfig = field(default_factory=LintConfig)
+    leaks: LeakConfig = field(default_factory=LeakConfig)
     window_hours: float = 24.0
     excludes: list[str] = field(default_factory=list)
 
@@ -72,6 +78,7 @@ def load_config(start: str | Path | None = None) -> Config:
         root=root,
         backend=backend,
         lint=LintConfig.from_dict(data.get("lint", {})),
+        leaks=LeakConfig.from_dict(data.get("leaks", {})),
         window_hours=float(data.get("window_hours", 24)),
         excludes=list(data.get("exclude", [])),
     )
