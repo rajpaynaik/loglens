@@ -13,6 +13,13 @@ Example ``loglens.toml``::
     required_fields = ["trace_id"]
     noisy_threshold = 50000
 
+    [context]                        # LL006: required fields by situation
+    all = ["request_id"]
+    error = ["tenant_id"]
+    in_retry = ["attempt"]
+    near_dependency = ["dependency"]
+    injected = ["trace_id"]          # added outside the code (e.g. by a log shipper)
+
     [leaks]                          # loglens leaks
     ignore = ["email"]               # detector kinds to skip
     allow = ['@example\\.com$']       # regexes for values that are fine (test data)
@@ -83,7 +90,7 @@ def load_config(start: str | Path | None = None) -> Config:
     return Config(
         root=root,
         backend=backend,
-        lint=LintConfig.from_dict(data.get("lint", {})),
+        lint=LintConfig.from_dict(data.get("lint", {}), context=data.get("context", {})),
         leaks=LeakConfig.from_dict(data.get("leaks", {})),
         cost=CostConfig.from_dict(data.get("cost", {})),
         window_hours=float(data.get("window_hours", 24)),

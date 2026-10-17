@@ -31,7 +31,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 | LL003 | `logger.error` inside `except` without `exc_info`, so the traceback is lost |
 | LL004 | `info`/`debug` log inside a loop |
 | LL005 | Message built at runtime, so it can't be traced back to production |
-| LL006 | Missing required context field in `extra=` (e.g. `trace_id`), opt-in |
+| LL006 | Missing required context: fields for every log, errors, retry loops and dependency calls (`[context]`), opt-in; context added automatically is credited |
 | LL007 | Failure logged below `warning` ("failed", "timeout", "could not" at `info`/`debug`), or an error swallowed by a broad `except` and logged at `info` |
 | LL100 | Noisy line: emits more than N times per window *(needs a backend)* |
 | LL101 | Warning/error line never seen in production *(needs a backend)* |
@@ -51,6 +51,7 @@ pip install "loglens[lsp]"        # editor support; add ,mcp for the MCP server
 cd examples/demo_app
 loglens index              # list every log call
 loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
+loglens context            # required context fields, and what's already added automatically
 loglens counts             # production counts per line, from the configured backend
 loglens cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
 loglens lint --volume      # static + volume rules
@@ -81,12 +82,19 @@ aggregate = true                    # let Loki count per file/line (see below); 
 
 [lint]
 ignore = ["LL004"]
-required_fields = ["trace_id"]      # enables LL006
+required_fields = ["trace_id"]      # LL006 for every log; see [context] for situational rules
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
 error_noisy_threshold = 10000       # LL104: error lines firing this often per window
 # failure_pattern = '\b(failed|timeout|declined)\b'   # LL007/LL104: what counts as a failure
+
+[context]                           # LL006: what each log call must carry
+all = ["request_id"]
+error = ["tenant_id", "user_id"]    # who was affected
+in_retry = ["attempt"]              # retry loops, @retry / @backoff functions
+near_dependency = ["dependency"]    # except blocks around HTTP / DB / client calls
+injected = ["trace_id"]             # added outside the code, e.g. by your log shipper
 
 [cost]
 price_per_gb = 0.50                 # what your log store charges per GB ingested
@@ -189,6 +197,26 @@ the surrounding function, so unreleased work on `main` doesn't show up.
 The deploy time defaults to the tag date (annotated tags) or the commit date. If you deploy
 later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
 
+## Context rules
+
+`database timeout`, with no query, duration, retry count or request ID, can't be acted on.
+LL006 requires context fields by situation, which loglens works out from the code:
+
+| Situation | When | Typical fields |
+|-----------|------|----------------|
+| `all` | every log call | `request_id`, `trace_id` |
+| `error` | `error` / `critical` / `exception` | `tenant_id`, `user_id` |
+| `in_retry` | a loop with `try`/`except` that sleeps or counts attempts, or a `@retry` / `@backoff` function | `attempt` |
+| `near_dependency` | an `except` around a call to `requests`, `httpx`, `boto3`, `cursor.execute` or a `*client` / `*session` / `*gateway` | `dependency`, `status_code` |
+
+The right way to add common context is once, for every log, not on each call. loglens
+credits fields that the project adds automatically: a logging filter or record factory
+that sets `record.request_id`, structlog `bind_contextvars(...)` or processors,
+`LoggerAdapter(logger, {...})` extras, and OpenTelemetry's logging instrumentation (which
+satisfies `trace_id` / `span_id`). Common spellings count as the same field
+(`requestId`, `correlation_id`). `loglens context` shows the rules, what was found and where,
+and how many log calls are missing what.
+
 ## Severity checks
 
 A payment failure logged at `info` never reaches an alert that watches `warning`/`error`.
@@ -287,7 +315,8 @@ class LogBackend(ABC):
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
-- [ ] Context coverage: required fields by situation (`[context]` rules such as errors need `tenant_id`, logs in retry loops need `attempt`, logs next to HTTP/DB calls need `dependency`), credit for context injected automatically (logging filters, structlog `bind_contextvars`, OpenTelemetry), and per-line field coverage measured in production (e.g. `tenant_id` present in 62% of records)
+- [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
+- [ ] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
 - [ ] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
 - [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
 

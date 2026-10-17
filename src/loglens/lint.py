@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .context import detect_injected, satisfied
 from .index import index_calls, iter_python_files
 from .models import Diagnostic, LogSite
 
@@ -49,13 +50,68 @@ LOW_LEVELS = {"debug", "info"}
 ERROR_LEVELS = {"error", "critical", "exception"}
 
 
+SITUATIONS = {
+    "all": "every log",
+    "error": "errors",
+    "in_retry": "retry loops",
+    "near_dependency": "dependency calls",
+}
+
+
+@dataclass
+class ContextRules:
+    """Which context fields LL006 requires, by situation (the ``[context]`` table)."""
+
+    all: list[str] = field(default_factory=list)
+    error: list[str] = field(default_factory=list)  # error / critical / exception calls
+    in_retry: list[str] = field(default_factory=list)
+    near_dependency: list[str] = field(default_factory=list)
+    injected: set[str] = field(default_factory=set)  # declared: added outside the code
+    detect: bool = True  # scan the project for filters / contextvars / OpenTelemetry
+    detected: dict[str, list[str]] = field(default_factory=dict)  # filled in at lint time
+
+    @property
+    def active(self) -> bool:
+        return bool(self.all or self.error or self.in_retry or self.near_dependency)
+
+    def available(self) -> set[str]:
+        return self.injected | set(self.detected)
+
+    def required(self, site: LogSite) -> list[tuple[str, str]]:
+        """``(field, situation)`` pairs this call must carry, most general first."""
+        out: list[tuple[str, str]] = [(f, "all") for f in self.all]
+        if site.level in ERROR_LEVELS:
+            out += [(f, "error") for f in self.error]
+        if site.in_retry:
+            out += [(f, "in_retry") for f in self.in_retry]
+        if site.near_dependency:
+            out += [(f, "near_dependency") for f in self.near_dependency]
+        seen: set[str] = set()
+        return [(f, why) for f, why in out if not (f in seen or seen.add(f))]
+
+    @classmethod
+    def from_dict(cls, data: Mapping) -> ContextRules:
+        unknown = set(data) - {*SITUATIONS, "injected", "detect"}
+        if unknown:
+            raise ValueError(f"unknown [context] key(s) {sorted(unknown)}")
+        return cls(
+            all=list(data.get("all", [])),
+            error=list(data.get("error", [])),
+            in_retry=list(data.get("in_retry", [])),
+            near_dependency=list(data.get("near_dependency", [])),
+            injected=set(data.get("injected", [])),
+            detect=bool(data.get("detect", True)),
+        )
+
+
 @dataclass
 class LintConfig:
     select: set[str] = field(default_factory=lambda: set(RULES))
     ignore: set[str] = field(default_factory=set)
     pii_pattern: str = DEFAULT_PII_PATTERN
-    # LL006 is off unless you list fields, e.g. ["trace_id"]
+    # LL006 is off unless you list fields, e.g. ["trace_id"]; same as [context] all
     required_fields: list[str] = field(default_factory=list)
+    context: ContextRules = field(default_factory=ContextRules)
     noisy_threshold: int = 100_000  # LL100: emits per window
     spike_ratio: float = 5.0  # LL102: current window >= ratio x previous window ...
     spike_min_count: int = 1_000  # ... and at least this many emits
@@ -74,8 +130,9 @@ class LintConfig:
         return code in self.select and code not in self.ignore
 
     @classmethod
-    def from_dict(cls, data: Mapping) -> LintConfig:
+    def from_dict(cls, data: Mapping, context: Mapping | None = None) -> LintConfig:
         cfg = cls()
+        cfg.context = ContextRules.from_dict(context or {})
         if "select" in data:
             cfg.select = set(data["select"])
         cfg.ignore = set(data.get("ignore", []))
@@ -248,13 +305,27 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
                 )
             )
 
-    if cfg.enabled("LL006") and cfg.required_fields:
+    if cfg.enabled("LL006") and (cfg.required_fields or cfg.context.active):
         keys = _extra_keys(call)
         if keys is not None:
-            missing = [f for f in cfg.required_fields if f not in keys]
+            rules = cfg.context
+            required = [(f, "all") for f in cfg.required_fields] + rules.required(site)
+            have = keys | rules.available()
+            missing: dict[str, str] = {}
+            for f, why in required:
+                if not satisfied(f, have):
+                    missing.setdefault(f, why)
             if missing:
+                parts = [
+                    f if why == "all" else f"{f} ({SITUATIONS[why]})" for f, why in missing.items()
+                ]
                 out.append(
-                    _diag(site, "LL006", f"missing context field(s) in extra: {', '.join(missing)}")
+                    _diag(
+                        site,
+                        "LL006",
+                        f"missing context: {', '.join(parts)}; pass it in extra= or add it to "
+                        "every log automatically (logging filter, contextvars)",
+                    )
                 )
     return out
 
@@ -274,6 +345,9 @@ def lint_paths(
     paths: Iterable[str | Path], cfg: LintConfig | None = None, root: Path | None = None
 ) -> list[Diagnostic]:
     root = (root or Path.cwd()).resolve()
+    cfg = cfg or LintConfig()
+    if cfg.enabled("LL006") and cfg.context.active and cfg.context.detect:
+        cfg.context.detected = detect_injected(root)
     out: list[Diagnostic] = []
     for p in paths:
         p = Path(p).resolve()

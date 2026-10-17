@@ -1,0 +1,133 @@
+"""Find context fields a project adds to every log automatically, so LL006 doesn't ask for
+them on each call.
+
+Recognised: logging filters / record factories that set ``record.<field>``, structlog
+``bind_contextvars(...)`` / ``.bind(...)`` and processors that set ``event_dict["<field>"]``,
+``LoggerAdapter(logger, {...})`` extras, and OpenTelemetry's logging instrumentation.
+"""
+
+from __future__ import annotations
+
+import ast
+from collections.abc import Iterable
+from pathlib import Path
+
+from .index import DEFAULT_EXCLUDES, iter_python_files
+
+# Names that mean the same field; satisfying one satisfies the others.
+SYNONYMS = [
+    {"trace_id", "traceId", "trace.id", "otelTraceID"},
+    {"span_id", "spanId", "span.id", "otelSpanID"},
+    {"request_id", "requestId", "req_id", "x_request_id", "correlation_id", "correlationId"},
+    {"user_id", "userId", "user.id", "uid"},
+    {"tenant_id", "tenantId", "tenant", "org_id", "orgId", "account_id"},
+]
+OTEL_FIELDS = {"otelTraceID", "otelSpanID", "otelServiceName", "otelTraceSampled"}
+_RECORD_PARAMS = {"record", "rec", "log_record", "logrecord"}
+_EVENT_DICT_PARAMS = {"event_dict", "event", "ed"}
+
+
+def aliases(field: str) -> set[str]:
+    for group in SYNONYMS:
+        if field in group:
+            return group
+    return {field}
+
+
+def satisfied(field: str, available: Iterable[str]) -> bool:
+    return bool(aliases(field) & set(available))
+
+
+def _params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    a = node.args
+    return {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]}
+
+
+def _call_name(node: ast.Call) -> str:
+    f = node.func
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return f.id if isinstance(f, ast.Name) else ""
+
+
+def detect_in_source(source: str, path: str = "<string>") -> dict[str, list[str]]:
+    """``{field: ["path:line how", ...]}`` for context injected by this file."""
+    try:
+        tree = ast.parse(source, filename=path)
+    except SyntaxError:
+        return {}
+    found: dict[str, list[str]] = {}
+
+    def add(field: str, node: ast.AST, how: str) -> None:
+        found.setdefault(field, []).append(f"{path}:{getattr(node, 'lineno', 0)} {how}")
+
+    for node in ast.walk(tree):
+        # def filter(self, record): record.request_id = ...  /  processors: event_dict["x"] = ...
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = _params(node)
+            record_params = params & _RECORD_PARAMS
+            event_params = params & _EVENT_DICT_PARAMS
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign):
+                    targets = sub.targets
+                elif isinstance(sub, (ast.AnnAssign, ast.AugAssign)):
+                    targets = [sub.target]
+                else:
+                    targets = []
+                for t in targets:
+                    if (
+                        isinstance(t, ast.Attribute)
+                        and isinstance(t.value, ast.Name)
+                        and t.value.id in record_params
+                    ):
+                        add(t.attr, sub, "sets it on every log record")
+                    if (
+                        isinstance(t, ast.Subscript)
+                        and isinstance(t.value, ast.Name)
+                        and t.value.id in event_params
+                        and isinstance(t.slice, ast.Constant)
+                        and isinstance(t.slice.value, str)
+                    ):
+                        add(t.slice.value, sub, "structlog processor")
+                if (
+                    isinstance(sub, ast.Call)
+                    and _call_name(sub) == "setattr"
+                    and len(sub.args) >= 2
+                    and isinstance(sub.args[0], ast.Name)
+                    and sub.args[0].id in record_params
+                    and isinstance(sub.args[1], ast.Constant)
+                    and isinstance(sub.args[1].value, str)
+                ):
+                    add(sub.args[1].value, sub, "sets it on every log record")
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name in ("bind_contextvars", "bind"):
+            for kw in node.keywords:
+                if kw.arg:
+                    add(kw.arg, node, f"structlog {name}()")
+        elif name == "LoggerAdapter" and len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
+            for k in node.args[1].keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    add(k.value, node, "LoggerAdapter extra")
+        elif name == "LoggingInstrumentor":
+            for field in OTEL_FIELDS:
+                add(field, node, "OpenTelemetry logging instrumentation")
+    return found
+
+
+def detect_injected(
+    root: str | Path, excludes: Iterable[str] = DEFAULT_EXCLUDES
+) -> dict[str, list[str]]:
+    """Scan every ``.py`` file under ``root`` for automatically injected context."""
+    root = Path(root).resolve()
+    found: dict[str, list[str]] = {}
+    for file in iter_python_files(root, excludes):
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = file.relative_to(root).as_posix()
+        for field, where in detect_in_source(text, rel).items():
+            found.setdefault(field, []).extend(where)
+    return found

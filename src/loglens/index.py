@@ -85,6 +85,61 @@ def _raises(handler: ast.ExceptHandler) -> bool:
     return False
 
 
+# Calls that talk to another system: by module, by method, or by the receiver's name.
+DEPENDENCY_MODULES = {
+    "requests", "httpx", "aiohttp", "urllib", "urllib3", "boto3", "botocore", "redis",
+    "pymongo", "grpc", "psycopg", "psycopg2", "pymysql", "sqlite3", "sqlalchemy", "socket",
+}  # fmt: skip
+DEPENDENCY_METHODS = {"execute", "executemany", "urlopen", "fetchone", "fetchall", "fetchmany"}
+DEPENDENCY_RECEIVERS = re.compile(
+    r"session|client|http|api|conn|cursor|db|engine|stub|gateway|pool|queue|bucket|producer",
+    re.IGNORECASE,
+)
+_RETRY_NAME = re.compile(r"attempt|retr|tries|tri\b", re.IGNORECASE)
+
+
+def is_dependency_call(name: str) -> bool:
+    """``requests.get``, ``cursor.execute``, ``self.payment_client.charge`` ... -> True."""
+    parts = name.replace("()", "").split(".")
+    if parts[0] in DEPENDENCY_MODULES or parts[-1] in DEPENDENCY_METHODS:
+        return True
+    return len(parts) >= 2 and bool(DEPENDENCY_RECEIVERS.search(parts[-2]))
+
+
+def _calls_dependency(nodes: list[ast.stmt]) -> bool:
+    for node in nodes:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                name = _receiver_text(sub.func)
+                if name and is_dependency_call(name):
+                    return True
+    return False
+
+
+def _is_retry_loop(node: ast.For | ast.AsyncFor | ast.While) -> bool:
+    """A loop that catches exceptions and either sleeps or counts attempts."""
+    body = [sub for stmt in node.body for sub in ast.walk(stmt)]
+    if not any(isinstance(sub, (ast.Try, *_TRY_STAR)) for sub in body):
+        return False
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        target = _receiver_text(node.target) if isinstance(node.target, ast.Name) else None
+        if target and _RETRY_NAME.search(target):
+            return True
+    names = (_receiver_text(sub.func) or "" for sub in body if isinstance(sub, ast.Call))
+    return any(n.rsplit(".", 1)[-1] == "sleep" for n in names)
+
+
+def _has_retry_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for dec in node.decorator_list:
+        name = _receiver_text(dec.func if isinstance(dec, ast.Call) else dec) or ""
+        if re.search(r"retry|backoff|tenacity", name, re.IGNORECASE):
+            return True
+    return False
+
+
+_TRY_STAR = (ast.TryStar,) if hasattr(ast, "TryStar") else ()
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, path: str) -> None:
         self.path = path
@@ -94,29 +149,58 @@ class _Visitor(ast.NodeVisitor):
         self._loop_depth = 0
         self._func_depth = 0
         self._swallowing: list[bool] = []  # one entry per enclosing except handler
+        self._dependency: list[bool] = []  # per handler: does its try call a dependency?
+        self._retry_depth = 0  # retry loops / @retry functions around the current node
 
     # Track context so the linter can reason about it later.
+    def visit_Try(self, node: ast.Try) -> None:
+        calls_dependency = _calls_dependency(node.body)
+        for handler in node.handlers:
+            handler._loglens_dependency = calls_dependency  # type: ignore[attr-defined]
+        self.generic_visit(node)
+
+    visit_TryStar = visit_Try
+
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         self._except_depth += 1
         self._swallowing.append(_is_broad(node.type) and not _raises(node))
+        self._dependency.append(getattr(node, "_loglens_dependency", False))
         self.generic_visit(node)
+        self._dependency.pop()
         self._swallowing.pop()
         self._except_depth -= 1
 
-    def _visit_loop(self, node: ast.AST) -> None:
+    def _visit_loop(self, node: ast.For | ast.AsyncFor | ast.While) -> None:
+        retry = _is_retry_loop(node)
         self._loop_depth += 1
+        self._retry_depth += retry
         self.generic_visit(node)
+        self._retry_depth -= retry
         self._loop_depth -= 1
 
     visit_For = visit_AsyncFor = visit_While = _visit_loop
 
     def _visit_func(self, node: ast.AST) -> None:
         # A loop outside a function doesn't make a log inside a nested def "in a loop".
-        saved = self._loop_depth, self._except_depth, self._swallowing
+        saved = (
+            self._loop_depth,
+            self._except_depth,
+            self._swallowing,
+            self._dependency,
+            self._retry_depth,
+        )
         self._loop_depth = self._except_depth = 0
-        self._swallowing = []
+        self._swallowing, self._dependency = [], []
+        is_def = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        self._retry_depth = int(is_def and _has_retry_decorator(node))  # type: ignore[arg-type]
         self.generic_visit(node)
-        self._loop_depth, self._except_depth, self._swallowing = saved
+        (
+            self._loop_depth,
+            self._except_depth,
+            self._swallowing,
+            self._dependency,
+            self._retry_depth,
+        ) = saved
 
     visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = _visit_func
 
@@ -161,6 +245,8 @@ class _Visitor(ast.NodeVisitor):
             in_except=self._except_depth > 0,
             in_loop=self._loop_depth > 0,
             in_swallowing_except=bool(self._swallowing) and self._swallowing[-1],
+            in_retry=self._retry_depth > 0,
+            near_dependency=bool(self._dependency) and self._dependency[-1],
         )
 
 

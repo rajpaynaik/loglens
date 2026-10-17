@@ -39,6 +39,10 @@ class LogSite:
     in_loop: bool = False
     # Inside a bare / ``except Exception`` handler that never raises: the error stops here.
     in_swallowing_except: bool = False
+    # In a retry loop (try/except in a loop that sleeps or counts attempts) or @retry function.
+    in_retry: bool = False
+    # In an except handler whose try block calls an HTTP / DB / service client.
+    near_dependency: bool = False
 
     @property
     def id(self) -> str:

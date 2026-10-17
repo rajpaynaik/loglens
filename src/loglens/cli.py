@@ -1,23 +1,24 @@
-"""Command-line interface: ``loglens index | lint | counts | cost | spikes | history | leaks |
-serve | mcp``."""
+"""Command-line interface: ``loglens index | lint | context | counts | cost | spikes | history |
+leaks | serve | mcp``."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .context import detect_injected
 from .cost import format_bytes, format_money, monthly_costs
 from .deploys import compare_deploy, resolve_deploy
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import KINDS, find_leaks
-from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
+from .lint import RULES, SITUATIONS, describe_trend, find_spikes, lint_paths, lint_volume
 from .matching import sample_messages
 from .models import parse_iso
 
@@ -79,6 +80,39 @@ def cmd_lint(args: argparse.Namespace, cfg: Config) -> int:
             print(d.format())
         if diags:
             print(f"\nFound {len(diags)} issue(s).", file=sys.stderr)
+    return 1 if diags else 0
+
+
+def cmd_context(args: argparse.Namespace, cfg: Config) -> int:
+    rules = cfg.lint.context
+    rules.detected = detect_injected(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+    print("Required fields ([context] in loglens.toml):")
+    required = {"all": [*cfg.lint.required_fields, *rules.all]} | {
+        k: getattr(rules, k) for k in SITUATIONS if k != "all"
+    }
+    for situation, fields in required.items():
+        print(f"  {SITUATIONS[situation]:<17} {', '.join(fields) or '-'}")
+    print("\nAdded to every log automatically:")
+    for f in sorted(rules.injected):
+        print(f"  {f:<17} declared in [context] injected")
+    for f, where in sorted(rules.detected.items()):
+        print(f"  {f:<17} {where[0]}" + (f" (+{len(where) - 1} more)" if len(where) > 1 else ""))
+    if not (rules.injected or rules.detected):
+        print("  nothing found (logging filters, structlog contextvars, OpenTelemetry)")
+
+    # Only LL006, and reuse the scan above instead of detecting again.
+    only = replace(cfg.lint, select={"LL006"}, ignore=set(), context=replace(rules, detect=False))
+    diags = lint_paths([cfg.root], only, root=cfg.root)
+    sites = _sites(cfg, None)
+    missing: dict[str, int] = {}
+    for d in diags:
+        for part in d.message.removeprefix("missing context: ").split(";")[0].split(", "):
+            missing[part] = missing.get(part, 0) + 1
+    print(f"\n{len(diags)} of {len(sites)} log call(s) are missing context:")
+    for part, n in sorted(missing.items(), key=lambda kv: -kv[1]):
+        print(f"  {n:>5}  {part}")
+    if diags and not args.quiet:
+        print("\n`loglens lint` lists each call site (LL006)")
     return 1 if diags else 0
 
 
@@ -342,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--volume", action="store_true", help="also run backend volume rules")
     p.add_argument("--format", choices=["text", "json"], default="text")
     p.set_defaults(func=cmd_lint)
+
+    p = sub.add_parser("context", help="required context fields and what's added automatically")
+    p.add_argument("-q", "--quiet", action="store_true")
+    p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("counts", help="show production log counts per line")
     p.add_argument("path", nargs="?")

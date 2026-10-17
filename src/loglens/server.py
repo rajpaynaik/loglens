@@ -14,9 +14,10 @@ from pygls.uris import to_fs_path
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .context import detect_in_source
 from .cost import LineCost, format_bytes, format_money, monthly_costs
 from .git import Commit, site_history
-from .index import DEFAULT_EXCLUDES, index_project, index_source
+from .index import DEFAULT_EXCLUDES, index_project, index_source, iter_python_files
 from .lint import describe_trend, is_spike, lint_source, lint_volume
 from .models import Diagnostic
 
@@ -47,7 +48,10 @@ class LoglensServer(LanguageServer):
         self.costs: dict[str, LineCost] = {}  # only when [cost] has a price
         self.previous_counts: dict[str, int] = {}
         self.counts_ready = False
-        self._history: dict[str, list[Commit]] = {}  # site id -> commits; reset on refresh
+        self._history: dict[str, list[Commit]] = {}
+        self._injected: dict[
+            str, dict[str, list[str]]
+        ] = {}  # file -> injected context  # site id -> commits; reset on refresh
         self._stop = threading.Event()
 
     # --- helpers ---------------------------------------------------------------
@@ -133,6 +137,29 @@ class LoglensServer(LanguageServer):
                 )
             self._stop.wait(REFRESH_SECONDS)
 
+    def scan_injected(self, path: str | None = None, source: str | None = None) -> None:
+        """Refresh auto-injected context for one file (on save) or the whole project."""
+        assert self.cfg is not None
+        rules = self.cfg.lint.context
+        if not (rules.active and rules.detect):
+            return
+        if path is None:
+            self._injected = {}
+            for file in iter_python_files(self.cfg.root, DEFAULT_EXCLUDES | set(self.cfg.excludes)):
+                try:
+                    text = file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                rel = file.relative_to(self.cfg.root).as_posix()
+                self._injected[rel] = detect_in_source(text, rel)
+        else:
+            self._injected[path] = detect_in_source(source or "", path)
+        merged: dict[str, list[str]] = {}
+        for found in self._injected.values():
+            for f, where in found.items():
+                merged.setdefault(f, []).extend(where)
+        rules.detected = merged
+
     def history(self, path: str, line: int) -> list[Commit]:
         assert self.cfg is not None
         key = f"{path}:{line}"
@@ -158,6 +185,7 @@ def on_initialized(ls: LoglensServer, params: types.InitializedParams) -> None:
             )
         )
         return
+    ls.scan_injected()
     threading.Thread(target=ls.refresh_counts_forever, daemon=True).start()
 
 
@@ -178,7 +206,16 @@ def did_change(ls: LoglensServer, params: types.DidChangeTextDocumentParams) -> 
 
 @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
 def did_save(ls: LoglensServer, params: types.DidSaveTextDocumentParams) -> None:
-    ls.publish(params.text_document.uri)
+    uri = params.text_document.uri
+    path = ls.rel_path(uri)
+    if ls.cfg and path:
+        before = ls.cfg.lint.context.detected
+        ls.scan_injected(path, ls.workspace.get_text_document(uri).source)
+        if ls.cfg.lint.context.detected.keys() != before.keys():
+            for open_uri in list(ls.workspace.text_documents):  # a new filter changes every file
+                ls.publish(open_uri)
+            return
+    ls.publish(uri)
 
 
 @server.feature(types.TEXT_DOCUMENT_CODE_LENS)
