@@ -20,7 +20,7 @@ from pathlib import Path
 from .backends import LogBackend, TimeRange
 from .context import get_field
 from .deploys import resolve_deploy
-from .index import DEFAULT_EXCLUDES, iter_python_files
+from .index import DEFAULT_EXCLUDES, iter_source_files
 from .leaks import LeakConfig, redact
 from .lint import LintConfig, describe_trend, is_spike
 from .matching import Matcher
@@ -63,7 +63,7 @@ class AppFiles:
     @classmethod
     def scan(cls, root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> AppFiles:
         root = root.resolve()
-        return cls(f.relative_to(root).as_posix() for f in iter_python_files(root, excludes))
+        return cls(f.relative_to(root).as_posix() for f in iter_source_files(root, excludes))
 
     def resolve(self, frame: Frame) -> str | None:
         """The project path of a frame, or None if it's not the project's code."""
@@ -168,13 +168,13 @@ def _describe(group: ErrorGroup, info: ErrorInfo | None, app: AppFiles) -> None:
     root = info.root
     own = [(app.resolve(f), f) for f in root.frames]
     own = [(p, f) for p, f in own if p]
-    if own:
+    if own and not root.logged_only:
         p, f = own[-1]
         group.raised_at, group.raised_in = f"{p}:{f.line}", f.function
     if root.frames and root.frames[-1].is_library:
         group.origin = root.frames[-1].library
     # The cause's frames run from the entry point to where it was raised.
-    group.path = [f"{p.rsplit('/', 1)[-1].removesuffix('.py')}.{f.function}" for p, f in own]
+    group.path = [f"{Path(p).stem}.{f.function}" for p, f in own]
     if group.origin:
         group.path.append(group.origin)
 

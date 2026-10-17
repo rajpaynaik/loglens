@@ -20,9 +20,14 @@ class Matcher:
     def __init__(self, sites: Iterable[LogSite]) -> None:
         self.sites = list(sites)
         self._by_basename_line: dict[tuple[str, int], list[LogSite]] = defaultdict(list)
+        # The other lines of a call that spans several: runtimes report different ones
+        # (Go and Java often the line of the last method in a chain, ``.Msg(...)``).
+        self._by_basename_span: dict[tuple[str, int], list[LogSite]] = defaultdict(list)
         for site in self.sites:
             basename = site.path.rsplit("/", 1)[-1]
             self._by_basename_line[(basename, site.line)].append(site)
+            for line in range(site.line + 1, site.end_line + 1):
+                self._by_basename_span[(basename, line)].append(site)
 
         compiled = [(s, s.template_regex()) for s in self.sites]
         # Longest literal text first: the first regex that matches is the most specific.
@@ -47,7 +52,8 @@ class Matcher:
     def match_location(self, src: str, line: int) -> LogSite | None:
         """The site at ``line`` of the file whose path ends like ``src`` (any OS separators)."""
         src = src.replace("\\", "/")
-        candidates = self._by_basename_line.get((src.rsplit("/", 1)[-1], line), [])
+        key = (src.rsplit("/", 1)[-1], line)
+        candidates = self._by_basename_line.get(key) or self._by_basename_span.get(key, [])
         if len(candidates) <= 1:
             return candidates[0] if candidates else None
         # Several files share a basename: prefer the longest matching path suffix.

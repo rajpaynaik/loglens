@@ -21,7 +21,10 @@ LIBRARY_METHODS = {
 }
 # Calls that return a logger with extra context: log.bind(x=1).info(...), logger.opt(...).
 WRAPPERS = {"bind", "new", "opt", "patch"}
-DEFAULT_EXCLUDES = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox"}
+DEFAULT_EXCLUDES = {
+    ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox",
+    "target", "vendor", ".gradle",
+}  # fmt: skip
 
 
 def _receiver_text(node: ast.expr) -> str | None:
@@ -358,24 +361,44 @@ def index_calls(source: str, path: str = "<string>") -> list[tuple[LogSite, ast.
 
 
 def index_source(source: str, path: str = "<string>") -> list[LogSite]:
-    """Return all log sites in a Python source string. Syntax errors yield an empty list."""
-    return [site for site, _ in index_calls(source, path)]
+    """Return all log sites in a source string; the language comes from ``path``'s extension
+    (Python by default). Python syntax errors yield an empty list."""
+    from .lang import MissingParser, language_of
+    from .lang import index_calls as index_other
+
+    language = language_of(path)
+    if language == "python":
+        return [site for site, _ in index_calls(source, path)]
+    try:
+        return [site for site, _ in index_other(language, source, path)]
+    except MissingParser:
+        return []
 
 
 def iter_python_files(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> Iterator[Path]:
+    return iter_source_files(root, excludes, (".py",))
+
+
+def iter_source_files(
+    root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES, suffixes: Iterable[str] | None = None
+) -> Iterator[Path]:
+    """Source files under ``root`` in the languages logsite reads (or only ``suffixes``)."""
+    from .lang import EXTENSIONS
+
+    wanted = tuple(suffixes or EXTENSIONS)
     excludes = set(excludes)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in excludes and not d.startswith(".")]
         for name in filenames:
-            if name.endswith(".py"):
+            if name.endswith(wanted) and not name.endswith("_test.go"):
                 yield Path(dirpath) / name
 
 
 def index_project(root: str | Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[LogSite]:
-    """Index every ``.py`` file under ``root``."""
+    """Index every Python, Java and Go file under ``root``."""
     root = Path(root).resolve()
     sites: list[LogSite] = []
-    for file in iter_python_files(root, excludes):
+    for file in iter_source_files(root, excludes):
         rel = file.relative_to(root).as_posix()
         try:
             text = file.read_text(encoding="utf-8")

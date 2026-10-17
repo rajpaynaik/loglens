@@ -257,7 +257,7 @@ def did_change(ls: LogsiteServer, params: types.DidChangeTextDocumentParams) -> 
 def did_save(ls: LogsiteServer, params: types.DidSaveTextDocumentParams) -> None:
     uri = params.text_document.uri
     found = ls.project_for(uri)
-    if found:
+    if found and found[1].endswith(".py"):  # context detection reads Python
         project, path = found
         before = project.cfg.lint.context.detected
         project.scan_injected(path, ls.workspace.get_text_document(uri).source)
@@ -408,6 +408,8 @@ def code_action(ls: LogsiteServer, params: types.CodeActionParams) -> list[types
     if found is None:
         return []
     _, path = found
+    if not path.endswith(".py"):
+        return []  # the rewrite is Python-only for now
     source = ls.workspace.get_text_document(uri).source
     calls = {site.line: (site, call) for site, call in index_calls(source, path)}
     actions = []

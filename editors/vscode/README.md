@@ -8,11 +8,12 @@ logger.debug(f"card {card_number} charged")                      # ⚠ LL001 eag
 logger.warning("legacy discount path used for %s", order.id)     # no logs in 24h  ← dead code?
 ```
 
-logsite maps production logs back to the exact line that wrote them, for Python's `logging`,
-**structlog** and **loguru**, reading from **Loki**, **OpenSearch / Elasticsearch**,
-**CloudWatch Logs** or a log file.
+logsite maps production logs back to the exact line that wrote them, for **Python**
+(`logging`, structlog, loguru), **Java** (SLF4J, Log4j 2, java.util.logging, Lombok) and **Go**
+(slog, zap, zerolog, logrus, logr, klog), reading from **Loki**, **OpenSearch /
+Elasticsearch**, **CloudWatch Logs** or a log file.
 
-> **Preview.** Python codebases only, for now. Java, JavaScript/TypeScript and Go are
+> **Preview.** JavaScript/TypeScript is
 > [planned](https://github.com/rajpaynaik/logsite#other-languages).
 
 ## Features
@@ -43,7 +44,8 @@ assistants. See the [project README](https://github.com/rajpaynaik/logsite#readm
 
    The extension uses the Python interpreter you've selected in VS Code
    (`python -m logsite serve`), then falls back to `logsite` on `PATH`. To use something else,
-   set `logsite.serverCommand`.
+   set `logsite.serverCommand`. For Java and Go projects, which usually have no Python
+   environment, install it once for your user: `pipx install "logsite[lsp]"`.
 
 2. **Point it at your logs** with a `logsite.toml` at the project root (lint works without one).
    In a monorepo, give each service its own; every file uses the nearest one:

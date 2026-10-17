@@ -152,3 +152,37 @@ def test_the_line_that_raised_shows_its_production_errors(tmp_path):
         assert "Errors logged here:" in hover and "raised at `app.py:10`" in hover
     finally:
         client.close()
+
+
+def test_go_files_get_counts_and_errors(tmp_path):
+    pytest.importorskip("tree_sitter_go")
+    import shutil
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures" / "go"
+    shutil.copytree(fixtures, tmp_path, dirs_exist_ok=True)
+    (tmp_path / "logsite.toml").write_text(
+        'window_hours = 876000\n[backend]\ntype = "file"\npath = "app.log"\n'
+    )
+    path = tmp_path / "internal" / "checkout" / "checkout.go"
+    uri = path.as_uri()
+    client = Client(tmp_path)
+    try:
+        client.request(
+            "initialize", {"processId": None, "rootUri": tmp_path.as_uri(), "capabilities": {}}
+        )
+        client.notify("initialized", {})
+        doc = {"uri": uri, "languageId": "go", "version": 1, "text": path.read_text()}
+        client.notify("textDocument/didOpen", {"textDocument": doc})
+        lenses = []
+        for _ in range(50):
+            lenses = client.request("textDocument/codeLens", {"textDocument": {"uri": uri}})
+            if lenses:
+                break
+            time.sleep(0.1)
+        titles = {lens["range"]["start"]["line"] + 1: lens["command"]["title"] for lens in lenses}
+        assert titles[20] == "$(graph) 1 in 876000h"  # slog, matched by source.file/line
+        assert titles[23] == "$(graph) 1 in 876000h"  # zap, by "caller"
+        assert titles[24] == "$(graph) 1 in 876000h"  # zerolog
+    finally:
+        client.close()

@@ -1,0 +1,7 @@
+panic: runtime error: index out of range [5] with length 3
+
+goroutine 1 [running]:
+example.com/shop/internal/checkout.Price(...)
+	/srv/app/internal/checkout/checkout.go:36
+main.main()
+	/srv/app/main.go:24 +0x8f4

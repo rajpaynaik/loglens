@@ -14,11 +14,11 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 
 > Formerly **loglens**: existing `loglens.toml` / `[tool.loglens]` configs keep working.
 >
-> Status: **pre-alpha**. Python codebases only, for now; Java, JavaScript/TypeScript and Go are on the [roadmap](#other-languages). Feedback and contributors welcome.
+> Status: **pre-alpha**. Python, Java and Go codebases; JavaScript/TypeScript is on the [roadmap](#other-languages). Feedback and contributors welcome.
 
 ## Features
 
-- **Log index**: finds every log call using `ast`: the standard `logging` module, **structlog** and **loguru**, including `%`-style, f-string, `.format()` and loguru `{}` templates, and chained calls like `log.bind(user_id=u).info(...)`.
+- **Log index**: finds every log call. Python (`ast`): the standard `logging` module, **structlog** and **loguru**, including `%`-style, f-string, `.format()` and loguru `{}` templates, and chained calls like `log.bind(user_id=u).info(...)`. **Java** (SLF4J, Log4j 2, java.util.logging, Lombok) and **Go** (slog, zap, zerolog, logrus, logr, klog): see [Java and Go](#java-and-go).
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `logsite cost` in the terminal), so you fix the few lines that make up most of the bill.
@@ -210,11 +210,36 @@ structlog.processors.CallsiteParameterAdder(
 
 loguru includes it automatically with `logger.add(sink, serialize=True)`.
 
+## Java and Go
+
+logsite reads Java and Go code with [tree-sitter](https://tree-sitter.github.io) grammars
+(installed with logsite), so counts, cost, the error summary, spikes, the Grafana dashboard,
+Alloy rules and the editor work the same as for Python. A repo can mix all three.
+
+| | Java | Go |
+|---|---|---|
+| **Loggers** | SLF4J, Log4j 2, java.util.logging, Commons Logging, Flogger, JBoss Logging; Lombok `@Slf4j` & co; fluent `log.atInfo().addKeyValue(...).log(...)` | `log/slog`, zap (and sugared), zerolog chains, logrus (`WithField(...)`), logr, klog, the standard `log` |
+| **Found by** | `Logger` fields and variables, `LoggerFactory.getLogger(...)`, Lombok annotations, `log`/`LOGGER` in files that import a logging package | logging imports, and fields, parameters and variables declared or built as loggers (`Zap *zap.Logger`, `lg := slog.New(h)`) |
+| **Templates** | `{}` (and `{0}`), `String.format` / `formatted` | the message, `%v`-style verbs for `Infof`-style calls |
+| **Caller fields** matched | `caller_file_name` + `caller_line_number` (+ `caller_class_name` for the package), Log4j 2 `source`, ECS `log.origin.*` | slog `AddSource` (`source.file` / `source.line`), zap and zerolog `caller` (`file.go:42`), logrus `file` |
+| **Stack traces** (`logsite errors`) | `at com.acme.X.y(X.java:42)`, `Caused by:`, `... 3 more`, in `stack_trace` (logstash-logback-encoder), `error.stack_trace` (ECS) or plain text | panics (`panic:` + the goroutine), zap's `stacktrace` |
+
+Lint rules for both: LL001 (string concatenation, `String.format`, `fmt.Sprintf` in the
+message), LL002 (secrets and personal data among the logged values and field keys), LL003
+(Java: an error logged in a `catch` without the exception, or with only `e.getMessage()`;
+Go: an error logged in `if err != nil` without `err`), LL004, LL005, LL007 (failure words
+at info; a broad `catch` or an `if err != nil` that logs at info and goes on) and the
+production rules (LL100–LL105). Context rules (LL006), LL008 and its quick fix are Python
+only for now.
+
+Go writes panics without a timestamp, so they count in every time window; ship them through
+something that adds one (a log shipper, `slog` with a recover handler).
+
 ## How log → line matching works
 
 Matching production logs to source lines is the hard part. logsite tries two methods, most reliable first:
 
-1. **Structured fields.** If your logs carry `pathname`/`filename` + `lineno` (or the ECS `log.origin.file.*` / OpenTelemetry `code.*` equivalents), matching is exact. Python's `logging` provides these for free; for example with [python-json-logger](https://github.com/nhairs/python-json-logger):
+1. **Structured fields.** If your logs carry `pathname`/`filename` + `lineno` (or the ECS `log.origin.file.*` / OpenTelemetry `code.*` equivalents, or the [Java and Go](#java-and-go) caller fields), matching is exact. A call that spans several lines matches on any of them. Python's `logging` provides these for free; for example with [python-json-logger](https://github.com/nhairs/python-json-logger):
    ```python
    JsonFormatter("%(asctime)s %(levelname)s %(message)s %(pathname)s %(lineno)d")
    ```
@@ -578,21 +603,21 @@ class LogBackend(ABC):
 
 ### Other languages
 
-Today logsite reads Python code. The parts that read production logs (backends, matching by
-file and line, error grouping, timelines, cost, leaks) don't depend on the language; each
-language needs an indexer for its log calls, lint rules that fit its loggers, and a stack
-trace parser.
+The parts that read production logs (backends, matching by file and line, error grouping,
+timelines, cost, leaks) don't depend on the language; each language needs an indexer for its
+log calls, lint rules that fit its loggers, and a stack trace parser.
 
-- [ ] **Java**: SLF4J / Logback / Log4j 2 (`log.info("order {} failed", id)`), including
-  Lombok `@Slf4j`; MDC context; Java stack traces (`at com.acme.Checkout.charge(Checkout.java:42)`,
-  `Caused by:`) for the error summary; JSON layouts (logstash-logback-encoder, ECS)
+- [x] **Java**: SLF4J / Log4j 2 / java.util.logging / Commons / Flogger, Lombok, fluent APIs;
+  caller fields from logstash-logback-encoder, Log4j 2 and ECS; Java stack traces in the
+  error summary
+- [x] **Go**: slog, zap, zerolog, logrus, logr, klog, `log`; caller fields; panics and zap
+  stack traces in the error summary
+- [x] Editor support for Java and Go through the same language server
 - [ ] **JavaScript / TypeScript**: pino, winston, bunyan and `console.*` in Node; child
   loggers (`logger.child({ requestId })`); Node stack traces (`at charge (src/checkout.ts:42:7)`),
   with source maps to map built JavaScript back to TypeScript lines
-- [ ] **Go**: `log/slog`, zap, zerolog and logrus (`slog.Info("order failed", "order_id", id)`);
-  `context.Context`-carried fields; Go panics and goroutine traces for the error summary
-- [ ] Editor support for each language through the same language server (VS Code activates
-  on `.java`, `.js`/`.ts`, `.go` files)
+- [ ] Java and Go: context rules (MDC, `context.Context` fields) and the structured-message
+  quick fix
 
 ## Contributing
 

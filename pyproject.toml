@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Raj Paynaik", email = "rajpaynaik18@gmail.com" }]
-keywords = ["logging", "observability", "lsp", "linter", "loki", "opensearch", "elasticsearch", "cloudwatch", "vscode", "mcp", "structlog", "loguru"]
+keywords = ["logging", "observability", "lsp", "linter", "loki", "opensearch", "elasticsearch", "cloudwatch", "vscode", "mcp", "structlog", "loguru", "java", "go", "slf4j", "slog", "zap"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -20,6 +20,10 @@ classifiers = [
 ]
 dependencies = [
   "tomli>=2.0; python_version < '3.11'",
+  # Java and Go code is read with tree-sitter grammars (small prebuilt wheels).
+  "tree-sitter>=0.23",
+  "tree-sitter-java>=0.23",
+  "tree-sitter-go>=0.23",
 ]
 
 [project.optional-dependencies]

@@ -9,7 +9,8 @@ First release.
 - Production errors: a code lens and hover on the line that raised them, grouped by cause.
 - Log-quality lint as you type (LL001–LL008), including context rules and severity checks.
 - Quick fix: move values out of the message into `extra=` / keyword arguments (LL008).
-- Python `logging`, structlog and loguru.
+- Python (`logging`, structlog, loguru), Java (SLF4J, Log4j 2, java.util.logging, Lombok)
+  and Go (slog, zap, zerolog, logrus, logr, klog).
 - Finds the server through the Python interpreter selected in VS Code, then `PATH`, and
   restarts when you pick another interpreter.
 - Each file uses the nearest `logsite.toml`, so a monorepo or a parent folder works.

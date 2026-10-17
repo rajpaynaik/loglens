@@ -37,6 +37,18 @@ CHAIN_MARKERS = (
 )
 _FRAME = re.compile(r'^\s*File "(?P<file>[^"]+)", line (?P<line>\d+)(?:, in (?P<func>.+))?\s*$')
 _EXC_LINE = re.compile(r"^(?P<type>[A-Za-z_][\w.]*)(?::\s?(?P<msg>.*))?$")
+_JDK_PACKAGES = ("java/", "javax/", "jdk/", "sun/", "com/sun/", "kotlin/", "scala/")
+# Java: "\tat com.acme.Checkout.charge(Checkout.java:42)", "at java.base/java.lang.Thread.run(...)"
+_JAVA_FRAME = re.compile(
+    r"^\s*at\s+(?:[\w.$@-]+/)?(?P<cls>[\w$.]+)\.(?P<method>[\w$<>-]+)\((?P<src>[^)]*)\)"
+)
+_JAVA_EXC = re.compile(
+    r"^(?:Exception in thread \"[^\"]*\" )?(?:Caused by: )?"
+    r"(?P<type>(?:[a-z_$][\w$]*\.)+[A-Z][\w$]*)(?::\s?(?P<msg>.*))?$"
+)
+# Go: "panic: ...", then per frame "pkg.Func(args)" and "\t/path/file.go:42 +0x1d".
+_GO_PANIC = re.compile(r"^panic: (?P<msg>.*?)(?: \[recovered\])?$")
+_GO_FILE = re.compile(r"^\t(?P<file>\S+\.go):(?P<line>\d+)(?: \+0x[0-9a-f]+)?$")
 _TEXT_LEVEL = re.compile(r"\b(ERROR|CRITICAL|FATAL|EXCEPTION)\b")
 _LIBRARY_PARTS = ("site-packages", "dist-packages")
 
@@ -56,18 +68,30 @@ class Frame:
             any(f"/{p}/" in path for p in _LIBRARY_PARTS)
             or path.startswith("<")  # <frozen runpy>, <string>
             or re.search(r"/lib/python\d", path) is not None
+            or path.startswith(_JDK_PACKAGES)  # Java frames carry the package as the path
+            or "/pkg/mod/" in path  # Go modules
+            or re.search(r"/go(?:/[\d.]+)?(?:/libexec)?/src/", path) is not None  # GOROOT
         )
 
     @property
     def library(self) -> str | None:
-        """``httpx`` for ``.../site-packages/httpx/_client.py``."""
+        """Where a frame from outside the project comes from: ``httpx`` (Python),
+        ``org.postgresql`` (Java), ``github.com/lib/pq`` or ``net/http`` (Go)."""
         path = self.file.replace("\\", "/")
         for p in _LIBRARY_PARTS:
             if f"/{p}/" in path:
                 rest = path.split(f"/{p}/", 1)[1]
                 return rest.split("/", 1)[0].removesuffix(".py")
         m = re.search(r"/lib/python[\d.]+/([^/]+)", path)
-        return m.group(1).removesuffix(".py") if m else None
+        if m:
+            return m.group(1).removesuffix(".py")
+        if path.endswith(".java"):
+            return ".".join(path.split("/")[:-1][:2]) or None
+        m = re.search(r"/pkg/mod/(.+?)@", path)
+        if m:
+            return m.group(1)
+        m = re.search(r"/go(?:/[\d.]+)?(?:/libexec)?/src/(.+)/[^/]+\.go$", path)
+        return m.group(1) if m else None
 
 
 @dataclass
@@ -77,9 +101,13 @@ class Exc:
     type: str
     message: str = ""
     frames: list[Frame] = field(default_factory=list)
+    # The frames show where it was logged, not raised: zap's "stacktrace" for a Go error.
+    logged_only: bool = False
 
     @property
     def title(self) -> str:
+        if self.type == "error" and self.message:  # a Go error: no type, just its text
+            return self.message
         return f"{self.type}: {self.message}" if self.message else self.type
 
 
@@ -131,6 +159,88 @@ def parse_traceback(text: str) -> list[Exc]:
     return [e for e in chain if e.type]
 
 
+def parse_java_trace(text: str) -> list[Exc]:
+    """A Java stack trace (with ``Caused by:`` causes), root cause first; frames from the
+    entry point to where each was thrown, like Python's."""
+    chain: list[Exc] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        m = _JAVA_FRAME.match(line)
+        if m and chain:
+            cls, src = m["cls"], m["src"]
+            package = cls.rsplit(".", 1)[0].split("$")[0] if "." in cls else ""
+            file, _, number = src.partition(":")
+            if not file.endswith((".java", ".kt", ".scala", ".groovy")):  # Native Method
+                file = cls.rsplit(".", 1)[-1].split("$")[0] + ".java"
+            path = f"{package.replace('.', '/')}/{file}" if package else file
+            method = m["method"]
+            chain[-1].frames.append(Frame(path, int(number) if number.isdigit() else 0, method))
+            continue
+        if stripped.startswith(("...", "Suppressed:")):
+            continue
+        m = _JAVA_EXC.match(stripped)
+        if m and (not chain or stripped.startswith("Caused by:")):
+            chain.append(Exc(m["type"], (m["msg"] or "").strip()))
+    for exc in chain:
+        exc.frames.reverse()  # Java prints the innermost frame first
+    return [e for e in reversed(chain) if e.frames]
+
+
+def parse_go_trace(text: str, exc_type: str = "panic", message: str = "") -> list[Exc]:
+    """A Go panic (``panic: ...`` + the panicking goroutine) or a stack alone (zap's
+    ``stacktrace`` field). Frames from the entry point to where it panicked."""
+    exc = Exc(exc_type, message)
+    func = None
+    goroutines = 0
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        m = _GO_PANIC.match(line)
+        if m and not exc.frames and not goroutines:
+            msg = m["msg"]
+            if msg.startswith("runtime error: "):
+                exc.type, exc.message = "runtime error", msg.removeprefix("runtime error: ")
+            else:
+                exc.type, exc.message = "panic", msg
+            continue
+        if line.startswith("goroutine "):
+            goroutines += 1
+            if goroutines > 1:
+                break  # only the goroutine that panicked
+            continue
+        m = _GO_FILE.match(line)
+        if m and func is not None:
+            name = func.split("/")[-1]
+            name = name.split(".", 1)[1] if "." in name else name
+            exc.frames.append(Frame(m["file"], int(m["line"]), re.sub(r"\(.*\)$", "", name)))
+            func = None
+            continue
+        if line and not line[0].isspace() and not line.startswith(("created by", "exit status")):
+            func = line
+    exc.frames.reverse()  # Go prints the innermost frame first
+    return [exc] if exc.frames else []
+
+
+def _parse_any(value: str, f: _Fields) -> tuple[list[Exc], str] | None:
+    """The chain in a stack-trace text of any language, and the text from its start."""
+    if TRACEBACK_START in value:
+        chain = parse_traceback(value)
+        if chain:
+            return chain, value[value.index(TRACEBACK_START) :]
+    if "\tat " in value or "\n    at " in value or value.lstrip().startswith("at "):
+        chain = parse_java_trace(value)
+        if chain:
+            return chain, value
+    if ".go:" in value:
+        message = next((str(v) for k in ("error", "err") if (v := f.get(k)) is not None), "")
+        chain = parse_go_trace(value, "error", message)
+        if chain:
+            if chain[0].type == "error":
+                chain[0].logged_only = True  # a stack taken where it was logged
+            return chain, value[value.index("panic: ") :] if "panic: " in value else value
+    return None
+
+
 def _structlog_chain(value: list) -> list[Exc]:
     """structlog's ``dict_tracebacks``: the raised exception first, then its causes."""
     chain = []
@@ -175,14 +285,14 @@ def extract_error(record: LogRecord, fields: _Fields | None = None) -> ErrorInfo
             chain = _structlog_chain(value)
             if chain:
                 return ErrorInfo(chain)
-        if isinstance(value, str) and TRACEBACK_START in value:
-            chain = parse_traceback(value)
-            if chain:
-                return ErrorInfo(chain, text=value)
-    if TRACEBACK_START in record.message:
-        chain = parse_traceback(record.message)
-        if chain:
-            return ErrorInfo(chain, text=record.message[record.message.index(TRACEBACK_START) :])
+        if isinstance(value, str) and "\n" in value:
+            found = _parse_any(value, f)
+            if found:
+                return ErrorInfo(found[0], text=found[1])
+    if "\n" in record.message:
+        found = _parse_any(record.message, f)
+        if found:
+            return ErrorInfo(found[0], text=found[1])
     exc_type = next((v for k in TYPE_FIELDS if isinstance(v := f.get(k), str) and v), None)
     if exc_type:
         message = next((str(v) for k in MESSAGE_FIELDS if (v := f.get(k)) is not None), "")
@@ -218,17 +328,26 @@ def is_error(record: LogRecord) -> bool:
 def join_multiline(lines: Iterable[str]) -> Iterator[str]:
     """Join plain-text tracebacks that span several lines back into one event each.
 
-    A traceback continues its event from ``Traceback (most recent call last):`` through the
-    indented frame lines to the ``SomeError: message`` line, including chained tracebacks.
-    JSON lines are always whole events.
+    A Python traceback continues its event from ``Traceback (most recent call last):``
+    through the indented frame lines to the ``SomeError: message`` line, including chained
+    tracebacks. A Java one is the ``com.acme.SomeException: message`` line and the ``at ...``,
+    ``Caused by:`` and ``... 3 more`` lines after it. A Go panic runs from ``panic:`` to the
+    next line that starts like a log line. JSON lines are always whole events.
     """
     event: list[str] = []
     in_frames = False  # between "Traceback ..." and the exception line
+    in_panic = False  # after a Go "panic: ..."
     for raw in lines:
         line = raw.rstrip("\n")
         stripped = line.strip()
         if not event or stripped.startswith("{"):
             continuation = False
+        elif in_panic and stripped and not _LOG_LINE_START.match(line):
+            continuation = True
+        elif _JAVA_CONTINUATION.match(line) or (
+            not line[:1].isspace() and _JAVA_THROWABLE.match(stripped)
+        ):
+            continuation = True
         elif stripped.startswith(TRACEBACK_START):
             continuation, in_frames = True, True
         elif stripped in CHAIN_MARKERS:
@@ -249,5 +368,18 @@ def join_multiline(lines: Iterable[str]) -> Iterator[str]:
             yield "\n".join(event)
         event = [line] if stripped else []
         in_frames = stripped.endswith(TRACEBACK_START)
+        in_panic = bool(_GO_PANIC.search(stripped)) or (in_panic and not stripped)
     if event:
         yield "\n".join(event)
+
+
+# "\tat com.acme.X.y(X.java:3)", "\t... 12 more", "Caused by: ...", "\tSuppressed: ..."
+_JAVA_CONTINUATION = re.compile(
+    r"^(\s+at \S|\s*\.\.\. \d+ (more|common frames)|\s*Caused by: |\s+Suppressed: )"
+)
+# "java.lang.IllegalStateException: boom" on its own line, under the log line that logged it
+_JAVA_THROWABLE = re.compile(
+    r"^(?:[a-z_$][\w$]*\.)+[A-Z][\w$]*(?:Exception|Error|Throwable)(?::|$)"
+)
+# How a new log line usually starts: a date, a bracketed date, or a level word.
+_LOG_LINE_START = re.compile(r"^(\[?\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|[A-Z]{4,8} |time=|level=)")

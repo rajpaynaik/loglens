@@ -7,9 +7,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-# Matches %-style placeholders (%s, %d, %(name)s, %.2f, %-5r ...) and str.format / f-string
-# placeholders that the indexer normalises to "{}".
-_PLACEHOLDER = re.compile(r"%(?:\([^)]*\))?[#0\- +]*\d*(?:\.\d+)?[sdifrxXeEgGcoau%]|\{\}")
+# Matches %-style placeholders (%s, %d, %(name)s, %.2f, %-5r ...; Go's %v, %q, %w, %+v ...)
+# and str.format / f-string / SLF4J placeholders that the indexers normalise to "{}".
+_PLACEHOLDER = re.compile(r"%(?:\([^)]*\))?[#0\- +]*\d*(?:\.\d+)?[sdifrxXeEgGcoauvqwTtpbU%]|\{\}")
+# "Checkout.java:42", "/srv/app/checkout.go:42": a file and line in one value (zap's
+# "caller", logrus's "file").
+_FILE_AND_LINE = re.compile(r"^(?P<file>.+\.[A-Za-z0-9]+):(?P<line>\d+)$")
 
 
 def parse_iso(value: str) -> datetime:
@@ -88,30 +91,58 @@ class LogRecord:
 
     @property
     def source_file(self) -> str | None:
-        # Python logging, OpenTelemetry (code.*) and Elastic Common Schema (log.origin.*)
-        for key in (
-            "pathname",
-            "filename",
-            "file",
-            "code.filepath",
-            "log.origin.file.name",
-            "source_file",
-        ):
-            value = self.fields.get(key)
-            if value:
-                return str(value)
-        return None
+        return self._location()[0]
 
     @property
     def source_line(self) -> int | None:
-        for key in ("lineno", "line", "code.lineno", "log.origin.file.line", "source_line"):
-            value = self.fields.get(key)
-            if value is not None:
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    return None
-        return None
+        return self._location()[1]
+
+    def _location(self) -> tuple[str | None, int | None]:
+        """Where the record was logged from, in whichever fields the logger put it."""
+        f = self.fields
+        nested = f.get("source") if isinstance(f.get("source"), dict) else {}
+        file = _first_value(
+            f,
+            nested,
+            # Python logging, OpenTelemetry (code.*), ECS (log.origin.*), logstash-logback-
+            # encoder (caller_*), Log4j 2 and Go slog (source.file)
+            ("pathname", "filename", "file", "code.filepath", "log.origin.file.name",
+             "source_file", "caller_file_name", "source.file"),
+        )  # fmt: skip
+        line = _first_value(
+            f,
+            nested,
+            ("lineno", "line", "code.lineno", "log.origin.file.line", "source_line",
+             "caller_line_number", "source.line"),
+        )  # fmt: skip
+        for combined in (file, f.get("caller")):  # "checkout.go:42" (zap, zerolog, logrus)
+            if isinstance(combined, str):
+                m = _FILE_AND_LINE.match(combined)
+                if m and (line is None or combined is not file):
+                    file, line = m["file"], m["line"]
+                    break
+        if file is not None:
+            file = str(file)
+            # Java: "Checkout.java" + class "com.acme.Checkout" -> "com/acme/Checkout.java"
+            cls = f.get("caller_class_name") or nested.get("class")
+            if isinstance(cls, str) and "/" not in file and "." in cls:
+                package = cls.rsplit(".", 1)[0].split("$")[0]
+                file = f"{package.replace('.', '/')}/{file}"
+        try:
+            number = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            number = None
+        return (file or None), number
+
+
+def _first_value(fields: dict, nested: dict, keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = fields.get(key)
+        if value is None and key.startswith("source."):
+            value = nested.get(key.split(".", 1)[1])
+        if value not in (None, ""):
+            return value
+    return None
 
 
 @dataclass

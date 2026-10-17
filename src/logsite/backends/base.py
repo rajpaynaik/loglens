@@ -114,6 +114,11 @@ def tally(
     return dict(counts)
 
 
+# Where JSON loggers put the time: Python, logstash-logback-encoder / ECS (@timestamp), Go's
+# slog / zerolog (time), zap (ts).
+TIME_KEYS = ("timestamp", "@timestamp", "time", "ts", "asctime", "datetime")
+
+
 def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
     """Parse a log line: JSON objects become structured records, anything else is plain text."""
     raw = raw.rstrip("\n")
@@ -130,7 +135,7 @@ def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
             message = next(
                 (str(data[k]) for k in ("message", "msg", "event", "log") if k in data), raw
             )
-            ts = timestamp or _parse_ts(data.get("timestamp") or data.get("time") or data.get("ts"))
+            ts = timestamp or _parse_ts(next((data[k] for k in TIME_KEYS if data.get(k)), None))
             return LogRecord(timestamp=ts, message=message, fields=data, size=_size(raw))
     return LogRecord(timestamp=timestamp or _leading_ts(raw), message=raw, size=_size(raw))
 

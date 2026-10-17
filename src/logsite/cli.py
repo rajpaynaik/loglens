@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, replace
+from datetime import timezone
 from pathlib import Path
 
 from . import __version__
@@ -447,7 +448,11 @@ def _deploy_spikes(args: argparse.Namespace, cfg: Config, backend, sites) -> int
 
 
 def _when(ts) -> str:
-    return f"{ts:%Y-%m-%d %H:%M}" if ts else "?"
+    if ts is None:
+        return "?"
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
+    return f"{ts:%Y-%m-%d %H:%M}"
 
 
 def _print_group(i: int, g: ErrorGroup, args: argparse.Namespace, cfg: Config) -> None:

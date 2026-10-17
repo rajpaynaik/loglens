@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .context import detect_injected, measure_coverage, satisfied
-from .index import index_calls, iter_python_files
+from .index import index_calls, iter_source_files
 from .models import _PLACEHOLDER, Diagnostic, LogRecord, LogSite
 
 RULES: dict[str, str] = {
@@ -410,7 +410,21 @@ def lint_source(
 ) -> list[Diagnostic]:
     cfg = cfg or LintConfig()
     pii = re.compile(cfg.pii_pattern)
+    from .lang import MissingParser, language_of
+    from .lang import index_calls as index_other
+
+    language = language_of(path)
     out: list[Diagnostic] = []
+    if language != "python":
+        from .lang.rules import check_facts
+
+        try:
+            calls = index_other(language, source, path)
+        except MissingParser:
+            return []
+        for site, facts in calls:
+            out.extend(check_facts(site, facts, cfg, pii))
+        return out
     for site, call in index_calls(source, path):
         out.extend(check_call(site, call, cfg, pii))
     return out
@@ -426,7 +440,7 @@ def lint_paths(
     out: list[Diagnostic] = []
     for p in paths:
         p = Path(p).resolve()
-        files = [p] if p.is_file() else iter_python_files(p)
+        files = [p] if p.is_file() else iter_source_files(p)
         for f in files:
             try:
                 rel = f.relative_to(root).as_posix()

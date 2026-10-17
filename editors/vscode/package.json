@@ -1,7 +1,7 @@
 {
   "name": "logsite",
   "displayName": "logsite",
-  "description": "See how often each log line fires in production, what it costs, and catch bad logging, right next to the logger.info(...) call.",
+  "description": "See how often each log line fires in production, what it costs, and catch bad logging, right next to the log call. Python, Java and Go.",
   "version": "0.1.0",
   "preview": true,
   "publisher": "rajpaynaik",
@@ -32,6 +32,10 @@
     "logs",
     "observability",
     "python",
+    "java",
+    "go",
+    "slf4j",
+    "slog",
     "structlog",
     "loguru",
     "loki",
@@ -42,6 +46,8 @@
   ],
   "activationEvents": [
     "onLanguage:python",
+    "onLanguage:java",
+    "onLanguage:go",
     "workspaceContains:logsite.toml"
   ],
   "main": "./out/extension.js",

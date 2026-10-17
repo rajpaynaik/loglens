@@ -94,7 +94,7 @@ async function start(): Promise<void> {
   output.appendLine(`Starting: ${server.join(" ")}`);
   const serverOptions: ServerOptions = { command, args };
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "python" }],
+    documentSelector: ["python", "java", "go"].map((language) => ({ scheme: "file", language })),
     outputChannel: output,
   };
   client = new LanguageClient("logsite", "logsite", serverOptions, clientOptions);
