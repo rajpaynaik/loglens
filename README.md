@@ -239,6 +239,9 @@ class LogBackend(ABC):
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 - [ ] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
+- [ ] Context coverage: required fields by situation (`[context]` rules such as errors need `tenant_id`, logs in retry loops need `attempt`, logs next to HTTP/DB calls need `dependency`), credit for context injected automatically (logging filters, structlog `bind_contextvars`, OpenTelemetry), and per-line field coverage measured in production (e.g. `tenant_id` present in 62% of records)
+- [ ] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
+- [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
 
 ## Contributing
 
