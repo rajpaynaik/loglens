@@ -13,7 +13,7 @@ from pygls.uris import to_fs_path
 
 from . import __version__
 from .backends import TimeRange, from_config
-from .config import Config, load_config
+from .config import Config, load_config, project_root
 from .context import detect_in_source
 from .cost import LineCost, format_bytes, format_money, monthly_costs
 from .fixes import structured_rewrite
@@ -41,77 +41,46 @@ def humanize(n: int) -> str:
     return str(n)
 
 
-class LogsiteServer(LanguageServer):
-    def __init__(self) -> None:
-        super().__init__("logsite", __version__)
-        self.cfg: Config | None = None
+class Project:
+    """One logsite project in the workspace: its config, production counts and caches.
+
+    A workspace can hold several (a monorepo, or a parent folder opened in the editor); each
+    file belongs to the nearest directory with its own config, see ``project_root``."""
+
+    def __init__(self, ls: LogsiteServer, cfg: Config) -> None:
+        self.ls = ls
+        self.cfg = cfg
         self.counts: dict[str, int] = {}
         self.costs: dict[str, LineCost] = {}  # only when [cost] has a price
         self.previous_counts: dict[str, int] = {}
         self.counts_ready = False
-        self._history: dict[str, list[Commit]] = {}
-        self._injected: dict[
-            str, dict[str, list[str]]
-        ] = {}  # file -> injected context  # site id -> commits; reset on refresh
-        self._stop = threading.Event()
+        self._history: dict[str, list[Commit]] = {}  # site id -> commits; reset on refresh
+        self._injected: dict[str, dict[str, list[str]]] = {}  # file -> injected context
 
-    # --- helpers ---------------------------------------------------------------
-    def rel_path(self, uri: str) -> str | None:
-        fs = to_fs_path(uri)
-        if not fs or not self.cfg:
-            return None
+    def rel_path(self, fs: str) -> str:
         try:
             return Path(fs).resolve().relative_to(self.cfg.root).as_posix()
         except ValueError:
             return Path(fs).name
 
-    def to_lsp(self, d: Diagnostic) -> types.Diagnostic:
-        return types.Diagnostic(
-            range=types.Range(
-                start=types.Position(line=d.line - 1, character=d.col),
-                end=types.Position(line=d.end_line - 1, character=d.end_col),
-            ),
-            message=d.message,
-            code=d.code,
-            source="logsite",
-            severity=SEVERITY.get(d.severity, types.DiagnosticSeverity.Warning),
-        )
-
-    def publish(self, uri: str) -> None:
-        if not self.cfg:
-            return
-        path = self.rel_path(uri)
-        if path is None:
-            return
-        source = self.workspace.get_text_document(uri).source
-        diags = lint_source(source, path, self.cfg.lint)
-        if self.counts_ready:
-            window = f"{self.cfg.window_hours:g}h"
-            diags += lint_volume(
-                index_source(source, path),
-                self.counts,
-                self.cfg.lint,
-                window,
-                previous=self.previous_counts,
-            )
-        self.text_document_publish_diagnostics(
-            types.PublishDiagnosticsParams(uri=uri, diagnostics=[self.to_lsp(d) for d in diags])
-        )
+    def start(self) -> None:
+        self.scan_injected()
+        threading.Thread(target=self.refresh_counts_forever, daemon=True).start()
 
     def refresh_counts_forever(self) -> None:
-        assert self.cfg is not None
         try:
             backend = from_config(self.cfg.backend)
         except (ValueError, RuntimeError) as exc:
-            self.window_show_message(
+            self.ls.window_show_message(
                 types.ShowMessageParams(
-                    type=types.MessageType.Error, message=f"logsite: bad [backend] config: {exc}"
+                    type=types.MessageType.Error,
+                    message=f"logsite: bad [backend] config in {self.cfg.root}: {exc}",
                 )
             )
             return
         if backend is None:
             return
-        while not self._stop.is_set():
+        while not self.ls._stop.is_set():
             try:
                 sites = index_project(self.cfg.root, DEFAULT_EXCLUDES | set(self.cfg.excludes))
                 current = TimeRange.last(self.cfg.window_hours)
@@ -125,22 +94,23 @@ class LogsiteServer(LanguageServer):
                 self.previous_counts = backend.count_by_line(sites, current.previous())
                 self._history.clear()
                 self.counts_ready = True
-                self.workspace_code_lens_refresh(None)
-                for uri in list(self.workspace.text_documents):
-                    self.publish(uri)
+                self.ls.workspace_code_lens_refresh(None)
+                for uri in list(self.ls.workspace.text_documents):
+                    found = self.ls.project_for(uri)
+                    if found and found[0] is self:
+                        self.ls.publish(uri)
             except Exception as exc:  # keep the server alive if the backend is down
                 log.warning("logsite: failed to fetch counts from %s: %s", backend.name, exc)
-                self.window_show_message(
+                self.ls.window_show_message(
                     types.ShowMessageParams(
                         type=types.MessageType.Warning,
                         message=f"logsite: couldn't reach {backend.name} backend: {exc}",
                     )
                 )
-            self._stop.wait(REFRESH_SECONDS)
+            self.ls._stop.wait(REFRESH_SECONDS)
 
     def scan_injected(self, path: str | None = None, source: str | None = None) -> None:
         """Refresh auto-injected context for one file (on save) or the whole project."""
-        assert self.cfg is not None
         rules = self.cfg.lint.context
         if not (rules.active and rules.detect):
             return
@@ -162,7 +132,6 @@ class LogsiteServer(LanguageServer):
         rules.detected = merged
 
     def history(self, path: str, line: int) -> list[Commit]:
-        assert self.cfg is not None
         key = f"{path}:{line}"
         commits = self._history.get(key)  # the refresh thread may clear the cache meanwhile
         if commits is None:
@@ -171,23 +140,78 @@ class LogsiteServer(LanguageServer):
         return commits
 
 
+class LogsiteServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__("logsite", __version__)
+        self.root: Path | None = None  # the workspace folder; set on initialized
+        self.projects: dict[Path, Project | None] = {}  # None: its config is broken
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    # --- helpers ---------------------------------------------------------------
+    def project_for(self, uri: str) -> tuple[Project, str] | None:
+        """The project a document belongs to, and its path relative to that project."""
+        fs = to_fs_path(uri)
+        if not fs or self.root is None:
+            return None
+        root = project_root(Path(fs), self.root)
+        with self._lock:
+            if root not in self.projects:
+                try:
+                    self.projects[root] = Project(self, load_config(root))
+                except ValueError as exc:
+                    self.projects[root] = None
+                    self.window_show_message(
+                        types.ShowMessageParams(
+                            type=types.MessageType.Error,
+                            message=f"logsite: bad config in {root}: {exc}",
+                        )
+                    )
+                else:
+                    self.projects[root].start()
+            project = self.projects[root]
+        return (project, project.rel_path(fs)) if project else None
+
+    def to_lsp(self, d: Diagnostic) -> types.Diagnostic:
+        return types.Diagnostic(
+            range=types.Range(
+                start=types.Position(line=d.line - 1, character=d.col),
+                end=types.Position(line=d.end_line - 1, character=d.end_col),
+            ),
+            message=d.message,
+            code=d.code,
+            source="logsite",
+            severity=SEVERITY.get(d.severity, types.DiagnosticSeverity.Warning),
+        )
+
+    def publish(self, uri: str) -> None:
+        found = self.project_for(uri)
+        if found is None:
+            return
+        project, path = found
+        cfg = project.cfg
+        source = self.workspace.get_text_document(uri).source
+        diags = lint_source(source, path, cfg.lint)
+        if project.counts_ready:
+            window = f"{cfg.window_hours:g}h"
+            diags += lint_volume(
+                index_source(source, path),
+                project.counts,
+                cfg.lint,
+                window,
+                previous=project.previous_counts,
+            )
+        self.text_document_publish_diagnostics(
+            types.PublishDiagnosticsParams(uri=uri, diagnostics=[self.to_lsp(d) for d in diags])
+        )
+
+
 server = LogsiteServer()
 
 
 @server.feature(types.INITIALIZED)
 def on_initialized(ls: LogsiteServer, params: types.InitializedParams) -> None:
-    root = ls.workspace.root_path or str(Path.cwd())
-    try:
-        ls.cfg = load_config(root)
-    except ValueError as exc:
-        ls.window_show_message(
-            types.ShowMessageParams(
-                type=types.MessageType.Error, message=f"logsite: bad config: {exc}"
-            )
-        )
-        return
-    ls.scan_injected()
-    threading.Thread(target=ls.refresh_counts_forever, daemon=True).start()
+    ls.root = Path(ls.workspace.root_path or Path.cwd()).resolve()
 
 
 @server.feature(types.SHUTDOWN)
@@ -208,11 +232,12 @@ def did_change(ls: LogsiteServer, params: types.DidChangeTextDocumentParams) -> 
 @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
 def did_save(ls: LogsiteServer, params: types.DidSaveTextDocumentParams) -> None:
     uri = params.text_document.uri
-    path = ls.rel_path(uri)
-    if ls.cfg and path:
-        before = ls.cfg.lint.context.detected
-        ls.scan_injected(path, ls.workspace.get_text_document(uri).source)
-        if ls.cfg.lint.context.detected.keys() != before.keys():
+    found = ls.project_for(uri)
+    if found:
+        project, path = found
+        before = project.cfg.lint.context.detected
+        project.scan_injected(path, ls.workspace.get_text_document(uri).source)
+        if project.cfg.lint.context.detected.keys() != before.keys():
             for open_uri in list(ls.workspace.text_documents):  # a new filter changes every file
                 ls.publish(open_uri)
             return
@@ -221,23 +246,22 @@ def did_save(ls: LogsiteServer, params: types.DidSaveTextDocumentParams) -> None
 
 @server.feature(types.TEXT_DOCUMENT_CODE_LENS)
 def code_lens(ls: LogsiteServer, params: types.CodeLensParams) -> list[types.CodeLens]:
-    if not ls.cfg or not ls.counts_ready:
-        return []
     uri = params.text_document.uri
-    path = ls.rel_path(uri)
-    if path is None:
+    found = ls.project_for(uri)
+    if found is None or not found[0].counts_ready:
         return []
-    window = f"{ls.cfg.window_hours:g}h"
+    project, path = found
+    window = f"{project.cfg.window_hours:g}h"
     lenses = []
     for site in index_source(ls.workspace.get_text_document(uri).source, path):
-        n = ls.counts.get(site.id, 0)
+        n = project.counts.get(site.id, 0)
         title = f"$(graph) {humanize(n)} in {window}" if n else f"no logs in {window}"
-        before = ls.previous_counts.get(site.id, 0)
-        if is_spike(n, before, ls.cfg.lint):
+        before = project.previous_counts.get(site.id, 0)
+        if is_spike(n, before, project.cfg.lint):
             title += f" $(arrow-up) {describe_trend(n, before)}"
-        cost = ls.costs.get(site.id)
+        cost = project.costs.get(site.id)
         if cost is not None:
-            title += f" · {format_money(cost.cost_per_month, ls.cfg.cost.currency)}/mo"
+            title += f" · {format_money(cost.cost_per_month, project.cfg.cost.currency)}/mo"
         pos = types.Position(line=site.line - 1, character=site.col)
         lenses.append(
             types.CodeLens(
@@ -250,12 +274,11 @@ def code_lens(ls: LogsiteServer, params: types.CodeLensParams) -> list[types.Cod
 
 @server.feature(types.TEXT_DOCUMENT_HOVER)
 def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
-    if not ls.cfg:
-        return None
     uri = params.text_document.uri
-    path = ls.rel_path(uri)
-    if path is None:
+    found = ls.project_for(uri)
+    if found is None:
         return None
+    project, path = found
     line = params.position.line + 1
     site = next(
         (
@@ -269,21 +292,22 @@ def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
         return None
 
     parts: list[str] = []
-    if ls.counts_ready:
-        window = f"{ls.cfg.window_hours:g}h"
-        n, before = ls.counts.get(site.id, 0), ls.previous_counts.get(site.id, 0)
+    if project.counts_ready:
+        window = f"{project.cfg.window_hours:g}h"
+        n, before = project.counts.get(site.id, 0), project.previous_counts.get(site.id, 0)
         parts.append(f"**logsite**: {n:,} in the last {window} (previous {window}: {before:,})")
-        if is_spike(n, before, ls.cfg.lint):
+        if is_spike(n, before, project.cfg.lint):
             parts[-1] += f", **spiked {describe_trend(n, before)}**"
-        cost = ls.costs.get(site.id)
+        cost = project.costs.get(site.id)
         if cost is not None:
             approx = "≈" if cost.estimated else ""
+            money = format_money(cost.cost_per_month, project.cfg.cost.currency)
             parts.append(
-                f"Cost: {approx}{format_money(cost.cost_per_month, ls.cfg.cost.currency)}/month "
+                f"Cost: {approx}{money}/month "
                 f"({format_bytes(cost.bytes_per_month)}/month, "
                 f"{format_bytes(cost.avg_bytes)} per line)"
             )
-    commits = ls.history(site.path, site.line)
+    commits = project.history(site.path, site.line)
     if commits:
         parts.append("Recent changes to this code:")
         parts.append(
@@ -309,12 +333,11 @@ def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
 def code_action(ls: LogsiteServer, params: types.CodeActionParams) -> list[types.CodeAction]:
     """LL008 quick fix: move formatted values into extra=."""
     wanted = [d for d in params.context.diagnostics if d.code == "LL008"]
-    if not ls.cfg or not wanted:
-        return []
     uri = params.text_document.uri
-    path = ls.rel_path(uri)
-    if path is None:
+    found = ls.project_for(uri) if wanted else None
+    if found is None:
         return []
+    _, path = found
     source = ls.workspace.get_text_document(uri).source
     calls = {site.line: (site, call) for site, call in index_calls(source, path)}
     actions = []

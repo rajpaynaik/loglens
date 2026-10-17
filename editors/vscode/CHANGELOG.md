@@ -9,4 +9,6 @@ First release.
 - Log-quality lint as you type (LL001–LL008), including context rules and severity checks.
 - Quick fix: move values out of the message into `extra=` / keyword arguments (LL008).
 - Python `logging`, structlog and loguru.
-- Finds the server through the Python interpreter selected in VS Code, then `PATH`.
+- Finds the server through the Python interpreter selected in VS Code, then `PATH`, and
+  restarts when you pick another interpreter.
+- Each file uses the nearest `logsite.toml`, so a monorepo or a parent folder works.

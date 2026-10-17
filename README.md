@@ -73,7 +73,8 @@ logsite mcp                # MCP server on stdio (used by AI assistants)
 
 ## Configuration
 
-`logsite.toml` at your project root, or `[tool.logsite]` in `pyproject.toml`:
+`logsite.toml` at your project root, or `[tool.logsite]` in `pyproject.toml`. In the editor,
+each file uses the nearest one, so a monorepo can give every service its own:
 
 ```toml
 window_hours = 24

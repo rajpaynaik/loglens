@@ -15,15 +15,19 @@ function runs(command: string, args: string[]): Promise<boolean> {
   });
 }
 
-/** The interpreter selected in the Python extension, if it's installed. */
-async function selectedPython(resource?: vscode.Uri): Promise<string | undefined> {
+/** The Python extension's API, if it's installed. */
+async function pythonApi(): Promise<any> {
   const ext = vscode.extensions.getExtension("ms-python.python");
   if (!ext) {
     return undefined;
   }
+  return ext.isActive ? ext.exports : await ext.activate();
+}
+
+/** The interpreter selected in the Python extension, if it's installed. */
+async function selectedPython(resource?: vscode.Uri): Promise<string | undefined> {
   try {
-    const api = ext.isActive ? ext.exports : await ext.activate();
-    const envs = api?.environments;
+    const envs = (await pythonApi())?.environments;
     const active = envs?.getActiveEnvironmentPath(resource);
     const env = active && (await envs.resolveEnvironment(active));
     return env?.executable?.uri?.fsPath ?? active?.path;
@@ -40,33 +44,36 @@ async function selectedPython(resource?: vscode.Uri): Promise<string | undefined
  *    virtualenv works without extra setup,
  * 3. `logsite` on PATH.
  */
-async function findServer(): Promise<string[] | undefined> {
+async function findServer(): Promise<{ server?: string[]; python?: string }> {
   const configured = vscode.workspace.getConfiguration("logsite").get<string[]>("serverCommand");
   if (configured && configured.length > 0) {
-    return configured;
+    return { server: configured };
   }
   const python = await selectedPython(vscode.workspace.workspaceFolders?.[0]?.uri);
   if (python && (await runs(python, ["-c", "import logsite.server"]))) {
-    return [python, "-m", "logsite", "serve"];
+    return { server: [python, "-m", "logsite", "serve"], python };
   }
   if (await runs("logsite", ["--version"])) {
-    return ["logsite", "serve"];
+    return { server: ["logsite", "serve"], python };
   }
   output.appendLine(
     `logsite not found${python ? ` in ${python}` : ""} or on PATH. Install it with: ${INSTALL}`,
   );
-  return undefined;
+  return { python };
 }
 
-async function notFound(): Promise<void> {
+async function notFound(python?: string): Promise<void> {
+  const select = "Select interpreter";
   const copy = "Copy install command";
   const settings = "Set server command";
-  const choice = await vscode.window.showWarningMessage(
-    `logsite: the language server isn't installed. Install it in your project's environment: ${INSTALL}`,
-    copy,
-    settings,
-  );
-  if (choice === copy) {
+  const message = python
+    ? `logsite isn't installed in the selected Python (${python}). Select the interpreter of ` +
+      `the environment where it's installed, or install it there: ${INSTALL}`
+    : `logsite: the language server isn't installed. Install it in your project's environment: ${INSTALL}`;
+  const choice = await vscode.window.showWarningMessage(message, select, copy, settings);
+  if (choice === select) {
+    await vscode.commands.executeCommand("python.setInterpreter");
+  } else if (choice === copy) {
     await vscode.env.clipboard.writeText(INSTALL);
   } else if (choice === settings) {
     await vscode.commands.executeCommand("workbench.action.openSettings", "logsite.serverCommand");
@@ -74,9 +81,9 @@ async function notFound(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  const server = await findServer();
+  const { server, python } = await findServer();
   if (!server) {
-    await notFound();
+    await notFound(python);
     return;
   }
   const [command, ...args] = server;
@@ -117,6 +124,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
   );
+  try {
+    // Restart when the user picks another interpreter, e.g. after "Select interpreter".
+    const envs = (await pythonApi())?.environments;
+    const sub = envs?.onDidChangeActiveEnvironmentPath?.(() => void restart());
+    if (sub) {
+      context.subscriptions.push(sub);
+    }
+  } catch (err) {
+    output.appendLine(`Couldn't watch the Python interpreter: ${err}`);
+  }
   await start();
 }
 

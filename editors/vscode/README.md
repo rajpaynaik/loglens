@@ -40,7 +40,8 @@ assistants. See the [project README](https://github.com/rajpaynaik/logsite#readm
    (`python -m logsite serve`), then falls back to `logsite` on `PATH`. To use something else,
    set `logsite.serverCommand`.
 
-2. **Point it at your logs** with a `logsite.toml` at the project root (lint works without one):
+2. **Point it at your logs** with a `logsite.toml` at the project root (lint works without one).
+   In a monorepo, give each service its own; every file uses the nearest one:
 
    ```toml
    [backend]

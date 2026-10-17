@@ -92,6 +92,35 @@ def find_root(start: Path) -> Path:
     return start
 
 
+def has_config(d: Path) -> bool:
+    """True if ``d`` holds a logsite config file or a ``[tool.logsite]`` table."""
+    if any((d / name).is_file() for name in CONFIG_FILES):
+        return True
+    pyproject = d / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    try:
+        tool = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("tool", {})
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+    return "logsite" in tool or "loglens" in tool
+
+
+def project_root(file: Path, workspace: Path) -> Path:
+    """The project a file belongs to in the editor: the nearest directory between the file
+    and the workspace root that has its own config (so a monorepo or a parent folder works),
+    else the workspace root. Files outside the workspace use :func:`find_root`."""
+    file, workspace = file.resolve(), workspace.resolve()
+    if not file.is_relative_to(workspace):
+        return find_root(file.parent)
+    for d in file.parents:
+        if d == workspace or has_config(d):
+            return d
+        if not d.is_relative_to(workspace):
+            break
+    return workspace
+
+
 def _resolve_backend(backend: dict, root: Path) -> dict:
     """Read ``*_env`` keys from the environment and make file paths absolute."""
     for key in list(backend):
