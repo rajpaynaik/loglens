@@ -43,6 +43,11 @@ class LogSite:
     in_retry: bool = False
     # In an except handler whose try block calls an HTTP / DB / service client.
     near_dependency: bool = False
+    library: str = "logging"  # logging | structlog | loguru
+    # Fields bound to the logger before the call: log.bind(user_id=...).info(...), or a
+    # name assigned from logger.bind(...).
+    bound_fields: tuple[str, ...] = ()
+    exc_opt: bool = False  # loguru: logger.opt(exception=...) attaches the traceback
 
     @property
     def id(self) -> str:

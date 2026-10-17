@@ -195,6 +195,10 @@ def describe_trend(current: int, previous: int) -> str:
     return f"{current / previous:.1f}x" if previous else "new"
 
 
+def _where_fields_go(site: LogSite) -> str:
+    return "in extra=" if site.library == "logging" else "as keyword arguments"
+
+
 def _diag(site: LogSite, code: str, message: str, severity: str = "warning") -> Diagnostic:
     return Diagnostic(
         code=code,
@@ -255,13 +259,27 @@ def interpolated_values(site: LogSite, call: ast.Call, msg: ast.expr) -> list[as
         return list(right.elts) if isinstance(right, ast.Tuple) else [right]
     if isinstance(msg, ast.Constant) and isinstance(msg.value, str):
         start = 2 if site.level == "log" else 1
+        if site.library == "loguru":  # str.format: "{}" takes args, "{user}" takes user=
+            fields = re.findall(r"(?<!\{)\{(\w*)[^{}]*\}", msg.value)
+            named = {f for f in fields if f and not f.isdigit()}
+            positional = list(call.args[start:]) if len(fields) > len(named) else []
+            return positional + [k.value for k in call.keywords if k.arg in named]
         if _PLACEHOLDER.search(msg.value.replace("%%", "")):
             return list(call.args[start:])
     return []
 
 
-def _extra_keys(call: ast.Call) -> set[str] | None:
-    """Keys passed via ``extra={...}``; None if ``extra`` isn't a literal dict."""
+def _extra_keys(call: ast.Call, site: LogSite | None = None) -> set[str] | None:
+    """Context fields the call passes; None if they can't be known statically.
+
+    stdlib: keys of a literal ``extra={...}``. structlog / loguru: keyword arguments, plus
+    fields bound with ``.bind(...)``.
+    """
+    if site is not None and site.library != "logging":
+        if any(k.arg is None for k in call.keywords):
+            return None  # **ctx
+        skip = {"exc_info", "stack_info", "event"}
+        return {k.arg for k in call.keywords if k.arg not in skip} | set(site.bound_fields)
     for kw in call.keywords:
         if kw.arg == "extra":
             if isinstance(kw.value, ast.Dict):
@@ -289,19 +307,21 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
     if cfg.enabled("LL002"):
         values: list[ast.AST] = list(call.args[1 if site.level == "log" else 0 :])
         values += [k.value for k in call.keywords if k.arg not in ("exc_info", "stack_info")]
-        hits = sorted({n for v in values for n in _names_in(v) if pii.search(n.lower())})
+        names = {n for v in values for n in _names_in(v)}
+        if site.library != "logging":  # log.info("signup", password=pw): the key is the field
+            names |= {k.arg for k in call.keywords if k.arg}
+        hits = sorted({n for n in names if pii.search(n.lower())})
         if hits:
             out.append(_diag(site, "LL002", f"possible PII/secret logged: {', '.join(hits)}"))
 
     if cfg.enabled("LL003") and site.in_except and site.level in ("error", "critical"):
-        if not any(k.arg == "exc_info" for k in call.keywords):
-            out.append(
-                _diag(
-                    site,
-                    "LL003",
-                    "traceback is lost; use logger.exception(...) or pass exc_info=True",
-                )
+        if not (site.exc_opt or any(k.arg == "exc_info" for k in call.keywords)):
+            fix = (
+                "logger.exception(...) or logger.opt(exception=True).error(...)"
+                if site.library == "loguru"
+                else "logger.exception(...) or pass exc_info=True"
             )
+            out.append(_diag(site, "LL003", f"traceback is lost; use {fix}"))
 
     if cfg.enabled("LL004") and site.in_loop and site.level in ("debug", "info"):
         out.append(
@@ -355,14 +375,14 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
                     site,
                     "LL008",
                     f"{len(values)} value(s) formatted into the message; keep the message "
-                    "constant and pass values in extra= so they can be queried (quick fix "
-                    "available in the editor)",
+                    f"constant and pass values {_where_fields_go(site)} so they can be queried "
+                    "(quick fix available in the editor)",
                     severity="info",
                 )
             )
 
     if cfg.enabled("LL006") and (cfg.required_fields or cfg.context.active):
-        keys = _extra_keys(call)
+        keys = _extra_keys(call, site)
         if keys is not None:
             rules = cfg.context
             have = keys | rules.available()
@@ -378,8 +398,8 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
                     _diag(
                         site,
                         "LL006",
-                        f"missing context: {', '.join(parts)}; pass it in extra= or add it to "
-                        "every log automatically (logging filter, contextvars)",
+                        f"missing context: {', '.join(parts)}; pass it {_where_fields_go(site)} "
+                        "or add it to every log automatically (logging filter, contextvars)",
                     )
                 )
     return out

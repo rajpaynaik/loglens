@@ -38,7 +38,7 @@ Try it against the demo: `cd examples/demo_app && loglens lint --volume && logle
   parses a recorded API response (see `test_loki_parse_response_merges_labels`).
 - **A new lint rule.** Add it to `RULES` and `check_call` in `lint.py`, with tests showing both a
   positive and a negative case.
-- **structlog / loguru support** in `index.py`.
+- **Another Python logging library** (e.g. `eliot`, `picologging`) in `index.py:library_names`.
 
 ## Guidelines
 

@@ -11,6 +11,16 @@ from pathlib import Path
 from .models import LogSite
 
 LEVEL_METHODS = {"debug", "info", "warning", "warn", "error", "critical", "fatal", "exception"}
+_LEVEL_ALIASES = {"warn": "warning", "fatal": "critical", "msg": "info", "trace": "debug",
+                  "success": "info"}  # fmt: skip
+# Extra level methods per library (structlog also has async a-prefixed variants).
+LIBRARY_METHODS = {
+    "logging": LEVEL_METHODS,
+    "structlog": LEVEL_METHODS | {"msg"} | {f"a{m}" for m in LEVEL_METHODS},
+    "loguru": LEVEL_METHODS | {"trace", "success"},
+}
+# Calls that return a logger with extra context: log.bind(x=1).info(...), logger.opt(...).
+WRAPPERS = {"bind", "new", "opt", "patch"}
 DEFAULT_EXCLUDES = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".tox"}
 
 
@@ -25,6 +35,74 @@ def _receiver_text(node: ast.expr) -> str | None:
         inner = _receiver_text(node.func)
         return f"{inner}()" if inner else None
     return None
+
+
+def _unwrap(node: ast.expr) -> tuple[ast.expr, list[str], bool]:
+    """Strip ``.bind(...)`` / ``.opt(...)`` wrappers: (base, bound field names, opt(exception))."""
+    bound: list[str] = []
+    exc = False
+    while (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in WRAPPERS
+    ):
+        if node.func.attr in ("bind", "new"):
+            bound += [k.arg for k in node.keywords if k.arg]
+        if node.func.attr == "opt":
+            exc = exc or any(
+                k.arg == "exception"
+                and not (isinstance(k.value, ast.Constant) and not k.value.value)
+                for k in node.keywords
+            )
+        node = node.func.value
+    return node, bound, exc
+
+
+def _root(node: ast.expr) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def library_names(tree: ast.AST) -> dict[str, tuple[str, frozenset[str]]]:
+    """Names bound to structlog / loguru loggers in a module: ``{name: (library, bound)}``.
+
+    ``from loguru import logger as lg``, ``log = structlog.get_logger()``,
+    ``log = logger.bind(request_id=r)``. Scopes are ignored: a name means the same thing in
+    the whole file, which is how logger variables are used in practice.
+    """
+    names: dict[str, tuple[str, frozenset[str]]] = {"structlog": ("structlog", frozenset())}
+    assigns: list[tuple[str, ast.expr]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "loguru":
+            for alias in node.names:
+                if alias.name == "logger":
+                    names[alias.asname or "logger"] = ("loguru", frozenset())
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("structlog", "loguru"):
+                    names[alias.asname or alias.name] = (alias.name, frozenset())
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                name = t.attr if isinstance(t, ast.Attribute) else getattr(t, "id", None)
+                if name:
+                    assigns.append((name, node.value))
+    for name, value in assigns:  # std = logging.getLogger(__name__), whatever it's called
+        func = _receiver_text(value.func) if isinstance(value, ast.Call) else None
+        if func and func.rsplit(".", 1)[-1] in ("getLogger", "LoggerAdapter"):
+            names.setdefault(name, ("logging", frozenset()))
+    for _ in range(3):  # follow short chains: log = base.bind(...); req_log = log.bind(...)
+        for name, value in assigns:
+            base, bound, _exc = _unwrap(value)
+            root = _root(base)
+            if root in names:
+                lib, already = names[root]
+                if root == "structlog" or bound or base is not value or isinstance(base, ast.Name):
+                    names[name] = (lib, already | frozenset(bound))
+    if "loguru" in names:  # import loguru; loguru.logger.info(...)
+        names.setdefault("loguru", ("loguru", frozenset()))
+    return names
 
 
 def _looks_like_logger(receiver: str) -> bool:
@@ -141,8 +219,9 @@ _TRY_STAR = (ast.TryStar,) if hasattr(ast, "TryStar") else ()
 
 
 class _Visitor(ast.NodeVisitor):
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, names: dict[str, tuple[str, frozenset[str]]] | None = None):
         self.path = path
+        self.names = names or {}
         self.sites: list[LogSite] = []
         self.calls: list[tuple[LogSite, ast.Call]] = []
         self._except_depth = 0
@@ -215,12 +294,20 @@ class _Visitor(ast.NodeVisitor):
         func = node.func
         if not isinstance(func, ast.Attribute):
             return None
-        receiver = _receiver_text(func.value)
-        if receiver is None or not _looks_like_logger(receiver):
+        base, bound, exc_opt = _unwrap(func.value)
+        receiver = _receiver_text(base)
+        if receiver is None:
+            return None
+        known = self.names.get(_root(base) or "")
+        library, name_bound = known or ("logging", frozenset())
+        if known is None and not _looks_like_logger(receiver):
             return None
 
-        if func.attr in LEVEL_METHODS:
-            level = {"warn": "warning", "fatal": "critical"}.get(func.attr, func.attr)
+        method = func.attr
+        if library == "structlog" and method.startswith("a") and method[1:] in LEVEL_METHODS:
+            method = method[1:]  # await log.ainfo(...)
+        if method in LIBRARY_METHODS[library]:
+            level = _LEVEL_ALIASES.get(method, method)
             msg_arg = node.args[0] if node.args else None
         elif func.attr == "log" and len(node.args) >= 2:
             level = "log"
@@ -232,6 +319,12 @@ class _Visitor(ast.NodeVisitor):
             msg_kw = next((k.value for k in node.keywords if k.arg == "msg"), None)
             msg_arg = msg_kw
         template = extract_template(msg_arg) if msg_arg is not None else None
+        if library == "loguru" and template is not None and isinstance(msg_arg, ast.Constant):
+            # loguru formats with str.format: "{}" / "{user}" / "{:.2f}" are placeholders.
+            template = re.sub(r"\{[^{}]*\}", "{}", template.replace("%", "%%"))
+        if library == "structlog" and msg_arg is None:
+            msg_kw = next((k.value for k in node.keywords if k.arg == "event"), None)
+            template = extract_template(msg_kw) if msg_kw is not None else None
 
         return LogSite(
             path=self.path,
@@ -247,6 +340,9 @@ class _Visitor(ast.NodeVisitor):
             in_swallowing_except=bool(self._swallowing) and self._swallowing[-1],
             in_retry=self._retry_depth > 0,
             near_dependency=bool(self._dependency) and self._dependency[-1],
+            library=library,
+            bound_fields=tuple(sorted(set(bound) | name_bound)),
+            exc_opt=exc_opt,
         )
 
 
@@ -256,7 +352,7 @@ def index_calls(source: str, path: str = "<string>") -> list[tuple[LogSite, ast.
         tree = ast.parse(source, filename=path)
     except SyntaxError:
         return []
-    visitor = _Visitor(path)
+    visitor = _Visitor(path, library_names(tree))
     visitor.visit(tree)
     return visitor.calls
 

@@ -100,6 +100,8 @@ def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
             data = json.loads(stripped)
         except json.JSONDecodeError:
             data = None
+        if isinstance(data, dict) and isinstance(data.get("record"), dict):
+            return _loguru_record(data["record"], raw, timestamp)
         if isinstance(data, dict):
             message = next(
                 (str(data[k]) for k in ("message", "msg", "event", "log") if k in data), raw
@@ -107,6 +109,32 @@ def parse_line(raw: str, timestamp: datetime | None = None) -> LogRecord:
             ts = timestamp or _parse_ts(data.get("timestamp") or data.get("time") or data.get("ts"))
             return LogRecord(timestamp=ts, message=message, fields=data, size=_size(raw))
     return LogRecord(timestamp=timestamp, message=raw, size=_size(raw))
+
+
+def _loguru_record(rec: dict, raw: str, timestamp: datetime | None) -> LogRecord:
+    """loguru's ``serialize=True`` output: ``{"text": ..., "record": {"message", "file",
+    "line", "level", "extra", "time", ...}}``. Flattened so file/line matching and context
+    checks see the same fields as any other JSON log."""
+    file = rec.get("file") if isinstance(rec.get("file"), dict) else {}
+    level = rec.get("level") if isinstance(rec.get("level"), dict) else {}
+    time = rec.get("time") if isinstance(rec.get("time"), dict) else {}
+    extra = rec.get("extra") if isinstance(rec.get("extra"), dict) else {}
+    fields = {
+        **extra,
+        "pathname": file.get("path") or file.get("name"),
+        "filename": file.get("name"),
+        "lineno": rec.get("line"),
+        "levelname": level.get("name"),
+        "funcName": rec.get("function"),
+        "name": rec.get("name"),
+    }
+    ts = timestamp or _parse_ts(time.get("timestamp") or time.get("repr"))
+    return LogRecord(
+        timestamp=ts,
+        message=str(rec.get("message", "")),
+        fields={k: v for k, v in fields.items() if v is not None},
+        size=_size(raw),
+    )
 
 
 def _size(raw: str) -> int:

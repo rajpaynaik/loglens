@@ -16,7 +16,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 
 ## Features
 
-- **Log index**: finds every `logger.*` / `logging.*` call using `ast`, including `%`-style, f-string and `.format()` templates.
+- **Log index**: finds every log call using `ast`: the standard `logging` module, **structlog** and **loguru**, including `%`-style, f-string, `.format()` and loguru `{}` templates, and chained calls like `log.bind(user_id=u).info(...)`.
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `loglens cost` in the terminal), so you fix the few lines that make up most of the bill.
@@ -165,6 +165,29 @@ All tools are read-only:
 | `lint` | Which log calls have quality problems (optionally including volume rules)? |
 | `list_log_calls` | Where are the log calls, and what are their message templates? |
 | `list_rules` | What do the `LL…` codes mean? |
+
+## structlog and loguru
+
+loglens works out which library each logger comes from (`log = structlog.get_logger()`,
+`from loguru import logger`, `std = logging.getLogger(__name__)`, whatever the variable is
+called) and applies the right conventions:
+
+| | `logging` | structlog | loguru |
+|---|---|---|---|
+| Fields (LL006, LL008 fix) | `extra={...}` | keyword arguments + `.bind(...)` | keyword arguments + `.bind(...)` |
+| Traceback (LL003) | `exc_info=True` / `.exception()` | `exc_info=True` / `.exception()` | `.opt(exception=True)` / `.exception()` |
+| Context added automatically | logging filters | `bind_contextvars`, processors | `contextualize`, `configure(extra=)` |
+| Matching production logs | `pathname` + `lineno` | `CallsiteParameterAdder` (`pathname`, `lineno`) | `serialize=True` JSON (`record.file`, `record.line`) |
+
+For exact matching, add the call site to structlog's processors:
+
+```python
+structlog.processors.CallsiteParameterAdder(
+    {CallsiteParameter.PATHNAME, CallsiteParameter.LINENO}
+)
+```
+
+loguru includes it automatically with `logger.add(sink, serialize=True)`.
 
 ## How log → line matching works
 
@@ -356,7 +379,8 @@ class LogBackend(ABC):
 - [x] OpenSearch and CloudWatch Logs backends
 - [ ] Kafka module: consumer lag, DLQ messages and errors per topic
 - [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
-- [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
+- [x] structlog and loguru: indexing, library-aware lint rules and quick fixes, loguru JSON parsing
+- [ ] Other languages: Go `slog`, Java SLF4J, Node pino
 - [x] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
 - [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window

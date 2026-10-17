@@ -1,7 +1,9 @@
-"""Quick fixes the editor can apply. LL008: move values out of the message into ``extra=``.
+"""Quick fixes the editor can apply. LL008: move values out of the message into fields.
 
 ``logger.error("payment failed for order %s: %s", order.id, err)`` becomes
-``logger.error("payment failed for order", extra={"order_id": order.id, "err": err})``.
+``logger.error("payment failed for order", extra={"order_id": order.id, "err": err})``, or
+for structlog / loguru, where fields are keyword arguments,
+``log.error("payment failed for order", order_id=order.id, err=err)``.
 The rewrite is only offered when it's safe: placeholders match the arguments, no
 ``%(name)s`` mappings, and any existing ``extra=`` is a literal dict to merge into.
 """
@@ -93,7 +95,11 @@ def structured_rewrite(source: str, site: LogSite, call: ast.Call) -> str | None
     if not values:
         return None
 
-    if isinstance(msg, ast.Constant):
+    if isinstance(msg, ast.Constant) and site.library == "loguru":
+        template = msg.value
+        if "{{" in template or len(re.findall(r"\{[^{}]*\}", template)) != len(values):
+            return None  # escaped braces, or fields without matching arguments
+    elif isinstance(msg, ast.Constant):
         template = msg.value
         bare = template.replace("%%", "")
         if len(_SIMPLE_PERCENT.findall(bare)) != len(values) or len(
@@ -109,9 +115,19 @@ def structured_rewrite(source: str, site: LogSite, call: ast.Call) -> str | None
     else:
         return None  # "..." % args and other shapes: leave to a human
 
+    kwargs_style = site.library != "logging"
+    named = set()
+    if site.library == "loguru" and isinstance(msg, ast.Constant):
+        named = {f for f in re.findall(r"\{(\w+)[^{}]*\}", msg.value) if not f.isdigit()}
     extra: dict[str, str] = {}
     other_kw: list[str] = []
     for kw in call.keywords:
+        if kwargs_style:
+            if kw.arg is None:
+                return None  # **ctx
+            if kw.arg not in named:  # loguru "{user}" + user=...: becomes a plain field below
+                other_kw.append(ast.get_source_segment(source, kw) or ast.unparse(kw))
+            continue
         if kw.arg == "extra":
             if not isinstance(kw.value, ast.Dict) or None in kw.value.keys:
                 return None  # extra=ctx or {**ctx}: can't merge safely
@@ -124,15 +140,22 @@ def structured_rewrite(source: str, site: LogSite, call: ast.Call) -> str | None
         else:
             other_kw.append(ast.get_source_segment(source, kw) or ast.unparse(kw))
 
-    taken = set(extra)
+    taken = set(extra) | {k.arg for k in call.keywords if k.arg and k.arg not in named}
+    if kwargs_style:
+        taken |= {"event"} if site.library == "structlog" else set()
+    named_values = {id(k.value): k.arg for k in call.keywords if k.arg in named}
     new_fields: dict[str, str] = {}
     for i, value in enumerate(values, 1):
-        name = _unique(field_name(value) or f"value{i}", taken)
+        name = named_values.get(id(value)) or _unique(field_name(value) or f"value{i}", taken)
         new_fields[name] = ast.get_source_segment(source, value) or ast.unparse(value)
 
     func = ast.get_source_segment(source, call.func) or ast.unparse(call.func)
     lead = [ast.get_source_segment(source, a) or ast.unparse(a) for a in call.args[:idx]]
+    message = json.dumps(constant_message(template))
+    if kwargs_style:
+        fields = [f"{k}={v}" for k, v in new_fields.items()]
+        return f"{func}({', '.join([*lead, message, *other_kw, *fields])})"
     items = {**extra, **new_fields}
     extra_src = "{" + ", ".join(f"{json.dumps(k)}: {v}" for k, v in items.items()) + "}"
-    args = [*lead, json.dumps(constant_message(template)), *other_kw, f"extra={extra_src}"]
+    args = [*lead, message, *other_kw, f"extra={extra_src}"]
     return f"{func}({', '.join(args)})"

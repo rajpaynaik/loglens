@@ -2,7 +2,8 @@
 ask for them on each call), and how many production records actually carry them.
 
 Recognised: logging filters / record factories that set ``record.<field>``, structlog
-``bind_contextvars(...)`` / ``.bind(...)`` and processors that set ``event_dict["<field>"]``,
+``bind_contextvars(...)`` and processors that set ``event_dict["<field>"]``,
+loguru ``contextualize(...)`` and ``configure(extra={...})``,
 ``LoggerAdapter(logger, {...})`` extras, and OpenTelemetry's logging instrumentation.
 """
 
@@ -104,10 +105,18 @@ def detect_in_source(source: str, path: str = "<string>") -> dict[str, list[str]
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node)
-        if name in ("bind_contextvars", "bind"):
+        # (.bind(...) is per logger, not global: the index tracks it on each call instead.)
+        if name in ("bind_contextvars", "contextualize"):
+            lib = "loguru" if name == "contextualize" else "structlog"
             for kw in node.keywords:
                 if kw.arg:
-                    add(kw.arg, node, f"structlog {name}()")
+                    add(kw.arg, node, f"{lib} {name}()")
+        elif name == "configure":  # loguru: logger.configure(extra={"service": ...})
+            for kw in node.keywords:
+                if kw.arg == "extra" and isinstance(kw.value, ast.Dict):
+                    for k in kw.value.keys:
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                            add(k.value, node, "loguru configure(extra=)")
         elif name == "LoggerAdapter" and len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
             for k in node.args[1].keys:
                 if isinstance(k, ast.Constant) and isinstance(k.value, str):
