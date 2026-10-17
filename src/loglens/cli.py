@@ -7,7 +7,6 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -18,6 +17,7 @@ from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import KINDS, find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
+from .models import parse_iso
 
 
 def _sites(cfg: Config, path: str | None):
@@ -168,7 +168,7 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
 
 def _deploy_spikes(args: argparse.Namespace, cfg: Config, backend, sites) -> int:
     try:
-        at = datetime.fromisoformat(args.deployed_at) if args.deployed_at else None
+        at = parse_iso(args.deployed_at) if args.deployed_at else None
         deploy = resolve_deploy(cfg.root, args.since_deploy, at=at, base=args.base)
         report = compare_deploy(cfg.root, sites, backend, deploy, cfg.lint, commits=args.commits)
     except ValueError as exc:

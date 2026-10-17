@@ -12,6 +12,17 @@ from typing import Any
 _PLACEHOLDER = re.compile(r"%(?:\([^)]*\))?[#0\- +]*\d*(?:\.\d+)?[sdifrxXeEgGcoau%]|\{\}")
 
 
+def parse_iso(value: str) -> datetime:
+    """``datetime.fromisoformat`` that also accepts a trailing ``Z`` on Python 3.10.
+
+    Git >= 2.5x prints UTC dates as ``...Z``; 3.10's parser only knows ``+00:00``.
+    """
+    value = value.strip()
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
+
+
 @dataclass(frozen=True)
 class LogSite:
     """One log call in source code, e.g. ``logger.info("user %s logged in", uid)``."""

@@ -51,3 +51,10 @@ def test_time_range_previous():
     r = TimeRange(start=end - timedelta(hours=24), end=end)
     prev = r.previous()
     assert prev.end == r.start and prev.start == r.start - timedelta(hours=24)
+
+
+def test_parse_log_accepts_utc_z_dates():
+    # git >= 2.5x prints UTC as "Z", which Python 3.10's fromisoformat rejects on its own
+    out = "abc\x1fAda\x1f2026-10-17T00:35:51Z\x1fsubject\n"
+    (c,) = parse_log(out)
+    assert c.date == datetime(2026, 10, 17, 0, 35, 51, tzinfo=timezone.utc)

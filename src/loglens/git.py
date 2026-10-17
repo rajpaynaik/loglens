@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .models import parse_iso
+
 _SEP = "\x1f"
 _FORMAT = _SEP.join(["%H", "%an", "%aI", "%s"])
 
@@ -61,7 +63,7 @@ def parse_log(output: str) -> list[Commit]:
             continue  # blank separators or diff output
         sha, author, date, summary = parts
         try:
-            when = datetime.fromisoformat(date)
+            when = parse_iso(date)
         except ValueError:
             continue
         commits.append(Commit(sha=sha, author=author, date=when, summary=summary))
@@ -126,7 +128,7 @@ def ref_time(root: str | Path, ref: str) -> datetime | None:
     if not (out and out.strip()):
         out = _git(root, "log", "-1", "--format=%cI", ref)
     try:
-        return datetime.fromisoformat(out.strip()) if out and out.strip() else None
+        return parse_iso(out) if out and out.strip() else None
     except ValueError:
         return None
 

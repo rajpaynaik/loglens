@@ -7,7 +7,6 @@ Run it with ``loglens mcp`` (stdio). Every tool is read-only.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -22,7 +21,7 @@ from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
-from .models import LogSite
+from .models import LogSite, parse_iso
 
 INSTRUCTIONS = """\
 loglens maps production logs back to the Python log calls that emitted them.
@@ -177,7 +176,7 @@ def build_server(cfg: Config) -> MCPServer:
         Compares deploy..now with an equally long window just before the deploy.
         """
         try:
-            at = datetime.fromisoformat(deployed_at) if deployed_at else None
+            at = parse_iso(deployed_at) if deployed_at else None
             deploy = resolve_deploy(cfg.root, ref, at=at, base=base)
         except ValueError as exc:
             raise ToolError(str(exc)) from exc

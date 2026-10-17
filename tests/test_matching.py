@@ -31,3 +31,14 @@ def test_fstring_with_percent():
 def test_bare_placeholder_template_never_matches():
     rec = parse_line("totally unrelated")
     assert matcher().match(rec) is None
+
+
+def test_parse_iso_handles_z_and_offsets():
+    from datetime import datetime, timedelta, timezone
+
+    from loglens.models import parse_iso
+
+    assert parse_iso("2026-10-17T00:35:51Z") == datetime(
+        2026, 10, 17, 0, 35, 51, tzinfo=timezone.utc
+    )
+    assert parse_iso(" 2026-10-17T02:35:51+02:00\n").utcoffset() == timedelta(hours=2)

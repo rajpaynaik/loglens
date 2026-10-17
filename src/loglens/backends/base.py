@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..matching import Matcher
-from ..models import LogRecord, LogSite
+from ..models import LogRecord, LogSite, parse_iso
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ def _parse_ts(value: object) -> datetime | None:
         return datetime.fromtimestamp(value, tz=timezone.utc)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parse_iso(value)
         except ValueError:
             return None
     return None
