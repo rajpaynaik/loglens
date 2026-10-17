@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .context import detect_injected, measure_coverage, satisfied
 from .index import index_calls, iter_python_files
-from .models import Diagnostic, LogRecord, LogSite
+from .models import _PLACEHOLDER, Diagnostic, LogRecord, LogSite
 
 RULES: dict[str, str] = {
     "LL001": "eager string formatting in log call",
@@ -24,12 +24,17 @@ RULES: dict[str, str] = {
     "LL005": "dynamic log message cannot be traced to production",
     "LL006": "log call missing required context field",
     "LL007": "failure logged below warning",
+    "LL008": "values formatted into the message instead of structured fields (opt-in)",
     "LL100": "noisy log line",
     "LL101": "log line never emitted",
     "LL102": "log line spiked compared with the previous window",
     "LL104": "log level doesn't match what the line does in production",
     "LL105": "required context missing from production records",
 }
+
+# Rules that are off unless selected: LL008 flags every %-style message, which is idiomatic
+# Python logging, so it's only for teams that have chosen structured logging.
+OPT_IN = {"LL008"}
 
 DEFAULT_PII_PATTERN = (
     r"passw(or)?d|passphrase|^pass$|secret|token|api_?key|auth(?!or)|credential|^ssn$|social_security"
@@ -111,7 +116,7 @@ class ContextRules:
 
 @dataclass
 class LintConfig:
-    select: set[str] = field(default_factory=lambda: set(RULES))
+    select: set[str] = field(default_factory=lambda: set(RULES) - OPT_IN)
     ignore: set[str] = field(default_factory=set)
     pii_pattern: str = DEFAULT_PII_PATTERN
     # LL006 is off unless you list fields, e.g. ["trace_id"]; same as [context] all
@@ -151,6 +156,10 @@ class LintConfig:
         cfg.context = ContextRules.from_dict(context or {})
         if "select" in data:
             cfg.select = set(data["select"])
+        cfg.select |= set(data.get("extend_select", []))
+        unknown = (cfg.select | set(data.get("ignore", []))) - set(RULES)
+        if unknown:
+            raise ValueError(f"unknown lint rule(s) {sorted(unknown)}; see `loglens rules`")
         cfg.ignore = set(data.get("ignore", []))
         cfg.pii_pattern = data.get("pii_pattern", cfg.pii_pattern)
         cfg.required_fields = list(data.get("required_fields", []))
@@ -232,6 +241,23 @@ def _is_eager(node: ast.expr) -> str | None:
         if isinstance(node.op, ast.Add):
             return "string concatenation"
     return None
+
+
+def interpolated_values(site: LogSite, call: ast.Call, msg: ast.expr) -> list[ast.expr]:
+    """The expressions formatted into a log message: %-args, f-string fields, .format() args."""
+    if isinstance(msg, ast.JoinedStr):
+        return [v.value for v in msg.values if isinstance(v, ast.FormattedValue)]
+    if isinstance(msg, ast.Call) and isinstance(msg.func, ast.Attribute):
+        if msg.func.attr == "format":
+            return [*msg.args, *(k.value for k in msg.keywords)]
+    if isinstance(msg, ast.BinOp) and isinstance(msg.op, ast.Mod):
+        right = msg.right
+        return list(right.elts) if isinstance(right, ast.Tuple) else [right]
+    if isinstance(msg, ast.Constant) and isinstance(msg.value, str):
+        start = 2 if site.level == "log" else 1
+        if _PLACEHOLDER.search(msg.value.replace("%%", "")):
+            return list(call.args[start:])
+    return []
 
 
 def _extra_keys(call: ast.Call) -> set[str] | None:
@@ -317,6 +343,20 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
                     f"a broad except swallows the error and logs it at {site.level}, so nothing "
                     "will alert on it; log at error with exc_info=True, or catch a narrower "
                     "exception",
+                    severity="info",
+                )
+            )
+
+    if cfg.enabled("LL008") and msg is not None:
+        values = interpolated_values(site, call, msg)
+        if values:
+            out.append(
+                _diag(
+                    site,
+                    "LL008",
+                    f"{len(values)} value(s) formatted into the message; keep the message "
+                    "constant and pass values in extra= so they can be queried (quick fix "
+                    "available in the editor)",
                     severity="info",
                 )
             )

@@ -33,6 +33,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 | LL005 | Message built at runtime, so it can't be traced back to production |
 | LL006 | Missing required context: fields for every log, errors, retry loops and dependency calls (`[context]`), opt-in; context added automatically is credited |
 | LL007 | Failure logged below `warning` ("failed", "timeout", "could not" at `info`/`debug`), or an error swallowed by a broad `except` and logged at `info` |
+| LL008 | Values formatted into the message instead of `extra=` fields; editor quick fix rewrites the call. **Opt-in** (`extend_select = ["LL008"]`) |
 | LL100 | Noisy line: emits more than N times per window *(needs a backend)* |
 | LL101 | Warning/error line never seen in production *(needs a backend)* |
 | LL102 | Line spiked: ≥ `spike_ratio`× the previous window and ≥ `spike_min_count` emits *(needs a backend)* |
@@ -54,6 +55,7 @@ loglens index              # list every log call
 loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
 loglens context            # required context fields, and what's already added automatically
 loglens context --production   # how often real records actually carry them, per log call
+loglens structure          # share of log calls with a constant message + fields (--production: by volume)
 loglens counts             # production counts per line, from the configured backend
 loglens cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
 loglens lint --volume      # static + volume rules
@@ -84,6 +86,7 @@ aggregate = true                    # let Loki count per file/line (see below); 
 
 [lint]
 ignore = ["LL004"]
+extend_select = ["LL008"]           # opt-in rules on top of the defaults
 required_fields = ["trace_id"]      # LL006 for every log; see [context] for situational rules
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
@@ -156,6 +159,7 @@ All tools are read-only:
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
 | `log_costs` | Which log calls cost the most per month? |
 | `context_coverage` | Which required context fields are missing from real records, and on which log calls? |
+| `structure_score` | How much of our logging is structured, and which loud lines aren't? |
 | `find_leaks` | Which log calls are writing secrets or personal data to production logs? |
 | `log_counts` | Which log calls are the loudest in production? |
 | `lint` | Which log calls have quality problems (optionally including volume rules)? |
@@ -240,6 +244,26 @@ Log calls below 95% (with >= 20 records):
 Fields count wherever they appear in a record, nested (`ctx.tenant_id`) or under a common
 synonym. Placeholder values (`""`, `"-"`, `null`) count as missing. LL105 reports the same
 gaps in `lint --volume`.
+
+## Structured messages
+
+`logger.error("payment failed for order %s: %s", order.id, err)` produces a different
+message for every order. You can't count or alert on it without a regex, and `order_id`
+isn't a field you can filter on. The structured version keeps the message constant:
+
+```python
+logger.error("payment failed for order", extra={"order_id": order.id, "err": err})
+```
+
+LL008 flags values formatted into a message (`%` args, f-strings, `.format()`). It's
+opt-in, because `%`-style messages are idiomatic Python logging. Turn it on with
+`extend_select = ["LL008"]` once your team has chosen structured logging. In the editor, the
+quick fix does the rewrite: it names fields after the expressions (`order.id` → `order_id`),
+merges into an existing `extra={...}`, and avoids `LogRecord` attribute names (`msg`,
+`name`, ...) that would raise at runtime. It only offers the fix when the rewrite is safe.
+
+`loglens structure` scores the codebase by top-level directory, and with `--production`
+by real volume, listing the loudest unstructured lines (the ones most worth converting).
 
 ## Severity checks
 
@@ -341,7 +365,7 @@ class LogBackend(ABC):
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
 - [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
-- [ ] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
+- [x] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
 - [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
 
 ## Contributing

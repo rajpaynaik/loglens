@@ -16,8 +16,9 @@ from .backends import TimeRange, from_config
 from .config import Config, load_config
 from .context import detect_in_source
 from .cost import LineCost, format_bytes, format_money, monthly_costs
+from .fixes import structured_rewrite
 from .git import Commit, site_history
-from .index import DEFAULT_EXCLUDES, index_project, index_source, iter_python_files
+from .index import DEFAULT_EXCLUDES, index_calls, index_project, index_source, iter_python_files
 from .lint import describe_trend, is_spike, lint_source, lint_volume
 from .models import Diagnostic
 
@@ -299,6 +300,47 @@ def hover(ls: LoglensServer, params: types.HoverParams) -> types.Hover | None:
             end=types.Position(line=site.end_line - 1, character=site.end_col),
         ),
     )
+
+
+@server.feature(
+    types.TEXT_DOCUMENT_CODE_ACTION,
+    types.CodeActionOptions(code_action_kinds=[types.CodeActionKind.QuickFix]),
+)
+def code_action(ls: LoglensServer, params: types.CodeActionParams) -> list[types.CodeAction]:
+    """LL008 quick fix: move formatted values into extra=."""
+    wanted = [d for d in params.context.diagnostics if d.code == "LL008"]
+    if not ls.cfg or not wanted:
+        return []
+    uri = params.text_document.uri
+    path = ls.rel_path(uri)
+    if path is None:
+        return []
+    source = ls.workspace.get_text_document(uri).source
+    calls = {site.line: (site, call) for site, call in index_calls(source, path)}
+    actions = []
+    for diag in wanted:
+        found = calls.get(diag.range.start.line + 1)
+        new_text = structured_rewrite(source, *found) if found else None
+        if new_text is None:
+            continue
+        site, _ = found
+        edit = types.TextEdit(
+            range=types.Range(
+                start=types.Position(line=site.line - 1, character=site.col),
+                end=types.Position(line=site.end_line - 1, character=site.end_col),
+            ),
+            new_text=new_text,
+        )
+        actions.append(
+            types.CodeAction(
+                title="loglens: move values into extra= (constant message)",
+                kind=types.CodeActionKind.QuickFix,
+                diagnostics=[diag],
+                is_preferred=True,
+                edit=types.WorkspaceEdit(changes={uri: [edit]}),
+            )
+        )
+    return actions
 
 
 def serve() -> None:

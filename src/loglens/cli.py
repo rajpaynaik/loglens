@@ -1,5 +1,5 @@
-"""Command-line interface: ``loglens index | lint | context | counts | cost | spikes | history |
-leaks | serve | mcp``."""
+"""Command-line interface: ``loglens index | lint | context | structure | counts | cost | spikes |
+history | leaks | serve | mcp``."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from .leaks import KINDS, find_leaks
 from .lint import RULES, SITUATIONS, describe_trend, find_spikes, lint_paths, lint_volume
 from .matching import sample_records
 from .models import parse_iso
+from .structure import production_score, score_project
 
 
 def _sites(cfg: Config, path: str | None):
@@ -146,6 +147,37 @@ def _production_coverage(args: argparse.Namespace, cfg: Config, sites) -> int:
         for sid, c in gaps[: args.top]:
             print(f"  {c.ratio:>5.0%}  {c.field:<15} {sid}  ({c.present}/{c.total})")
     return 1 if gaps else 0
+
+
+def cmd_structure(args: argparse.Namespace, cfg: Config) -> int:
+    report = score_project(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+    o = report.overall
+    print(
+        f"Structure score: {o.ratio:.0%} of log calls keep a constant message "
+        f"({o.structured}/{o.total})"
+    )
+    for name, s in sorted(report.by_area.items(), key=lambda kv: kv[1].ratio):
+        print(f"  {name:<24} {s.ratio:>5.0%}  ({s.structured}/{s.total})")
+    if args.production:
+        backend = _backend_or_exit(cfg)
+        hours = args.hours or cfg.window_hours
+        counts = backend.count_by_line(_sites(cfg, None), TimeRange.last(hours))
+        p = production_score(report, counts)
+        print(
+            f"\nIn production (last {hours:g}h): {p.ratio:.0%} of {p.total:,} log line(s) come "
+            "from constant-message calls"
+        )
+        worst = sorted(
+            ((counts.get(s.id, 0), s) for s in report.unstructured if counts.get(s.id)),
+            key=lambda t: -t[0],
+        )[: args.top]
+        if worst:
+            print("Biggest unstructured lines by volume:")
+            for n, site in worst:
+                print(f"  {n:>10,}  {site.id}  {site.template!r}")
+    if report.unstructured and not args.production:
+        print("\nenable LL008 (extend_select) to flag each one; the editor can fix them")
+    return 0
 
 
 def cmd_counts(args: argparse.Namespace, cfg: Config) -> int:
@@ -418,6 +450,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=5000, help="records to sample (default 5000)")
     p.add_argument("--top", type=int, default=20)
     p.set_defaults(func=cmd_context)
+
+    p = sub.add_parser("structure", help="share of log calls with a constant message + fields")
+    p.add_argument("--production", action="store_true", help="also weight by production volume")
+    p.add_argument("--hours", type=float)
+    p.add_argument("--top", type=int, default=10)
+    p.set_defaults(func=cmd_structure)
 
     p = sub.add_parser("counts", help="show production log counts per line")
     p.add_argument("path", nargs="?")

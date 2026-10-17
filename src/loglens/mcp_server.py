@@ -25,6 +25,7 @@ from .leaks import find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
 from .matching import sample_records
 from .models import LogSite, parse_iso
+from .structure import production_score, score_project
 
 INSTRUCTIONS = """\
 loglens maps production logs back to the Python log calls that emitted them.
@@ -35,6 +36,7 @@ Otherwise start with `spikes` to find lines whose volume jumped, then `log_histo
 of them to see which commits changed the surrounding code. `lint` finds log-quality problems
 (rules: `list_rules`). `log_costs` ranks log calls by monthly spend.
 `context_coverage` shows which required context fields production records actually carry.
+`structure_score` shows how much logging keeps a constant message with values in fields.
 `find_leaks` finds secrets and personal data that actually reached production logs; sample
 values are masked, so don't try to reconstruct them.
 Tools that need production data fail if no backend is configured.
@@ -328,6 +330,39 @@ def build_server(cfg: Config) -> MCPServer:
                 if c.ratio < rules.min_coverage and c.total >= rules.min_records
             ],
         }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def structure_score(production: bool = False, hours: float | None = None) -> dict[str, Any]:
+        """How much of the codebase logs a constant message with values in extra= fields
+        (searchable, groupable) versus values formatted into the text. production=True also
+        weights by real volume and lists the loudest unstructured log calls.
+        """
+        report = score_project(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
+        out: dict[str, Any] = {
+            "structured": report.overall.structured,
+            "total": report.overall.total,
+            "score": round(report.overall.ratio, 4),
+            "by_area": {
+                name: {"structured": s.structured, "total": s.total, "score": round(s.ratio, 4)}
+                for name, s in report.by_area.items()
+            },
+        }
+        if production:
+            b = backend()
+            all_sites = sites()
+            now = counts(b, all_sites, TimeRange.last(hours or window_default))
+            p = production_score(report, now)
+            out["production"] = {
+                "structured_lines": p.structured,
+                "lines": p.total,
+                "score": round(p.ratio, 4),
+            }
+            out["loudest_unstructured"] = [
+                {**_site(s), "count": now[s.id]}
+                for s in sorted(report.unstructured, key=lambda s: -now.get(s.id, 0))[:10]
+                if now.get(s.id)
+            ]
+        return out
 
     @mcp.tool(annotations=READ_ONLY)
     def log_history(target: str, max_count: int = 10) -> list[dict[str, str]]:
