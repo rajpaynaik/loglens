@@ -50,6 +50,7 @@ loglens lint               # static log-quality checks (exit 1 on findings, good
 loglens counts             # production counts per line, from the configured backend
 loglens lint --volume      # static + volume rules
 loglens spikes             # lines that jumped vs the previous window, with suspect commits
+loglens spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
 loglens history app/checkout.py:7   # commits that touched the code around a log line
 loglens serve              # language server on stdio (used by editors)
 loglens mcp                # MCP server on stdio (used by AI assistants)
@@ -120,6 +121,7 @@ All tools are read-only:
 
 | Tool | What it answers |
 |------|-----------------|
+| `compare_deploy` | What spiked or started erroring after release `v1.4.0`, and which commits in it are to blame? |
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
 | `log_counts` | Which log calls are the loudest in production? |
@@ -156,6 +158,17 @@ count grew by `spike_ratio` (and passed `spike_min_count`) is a spike. loglens t
 spikes when its callers or surrounding logic change, not the log call itself. Line numbers
 refer to `HEAD`, so uncommitted edits above the function can shift the range.
 
+### After a release
+
+`loglens spikes --since-deploy v1.4.0` compares each line from the deploy until now with an
+equally long window just before it. Besides spikes, it lists **new errors**: error lines that
+never fired before the deploy, even a handful of times. For each one it shows only the
+commits **in that release** (from the previous tag, or `--base`, up to `v1.4.0`) that touched
+the surrounding function, so unreleased work on `main` doesn't show up.
+
+The deploy time defaults to the tag date (annotated tags) or the commit date. If you deploy
+later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
+
 ## Architecture
 
 ```
@@ -191,7 +204,7 @@ class LogBackend(ABC):
 - [ ] Other languages: structlog/loguru, then Go `slog`, Java SLF4J, Node pino
 - [ ] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
-- [ ] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release (git tags or deploy markers) instead of a rolling window
+- [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [ ] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
 

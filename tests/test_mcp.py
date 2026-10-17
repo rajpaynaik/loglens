@@ -21,7 +21,9 @@ def call(root, tool, args=None):
             r = await client.call_tool(tool, args or {})
             if r.is_error:
                 return True, r.content[0].text
-            return False, r.structured_content["result"]
+            out = r.structured_content
+            # Non-object results (lists) come wrapped as {"result": ...}
+            return False, out["result"] if set(out) == {"result"} else out
 
     return asyncio.run(run())
 
@@ -64,6 +66,7 @@ def test_tools_are_read_only(project):
         "lint",
         "log_counts",
         "spikes",
+        "compare_deploy",
         "log_history",
     }
     assert all(t.annotations.read_only_hint for t in tools.values())

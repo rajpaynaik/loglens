@@ -68,6 +68,21 @@ def parse_log(output: str) -> list[Commit]:
     return commits
 
 
+def _git(root: str | Path, *args: str) -> str | None:
+    """stdout of ``git -C root <args>``, or None if git is missing or the command fails."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def line_history(
     root: str | Path,
     path: str,
@@ -75,16 +90,16 @@ def line_history(
     end: int | None = None,
     since: datetime | None = None,
     max_count: int = 5,
+    revs: str | None = None,
 ) -> list[Commit]:
     """Commits (newest first) that touched lines ``start..end`` of ``path`` at ``HEAD``.
 
-    Line numbers refer to ``HEAD``; uncommitted edits above the range shift it. Returns an
-    empty list if ``root`` isn't a git repo, the file isn't committed, or git is missing.
+    ``revs`` limits the walk, e.g. ``"v1.3..HEAD"`` (it must end at ``HEAD`` for the line
+    numbers to apply). Line numbers refer to ``HEAD``; uncommitted edits above the range
+    shift it. Returns an empty list if ``root`` isn't a git repo, the file isn't committed,
+    or git is missing.
     """
-    cmd = [
-        "git",
-        "-C",
-        str(root),
+    args = [
         "log",
         f"-L{start},{end or start}:{path}",
         "--no-patch",
@@ -92,14 +107,40 @@ def line_history(
         f"--max-count={max_count}",
     ]
     if since is not None:
-        cmd.append(f"--since={since.isoformat()}")
+        args.append(f"--since={since.isoformat()}")
+    if revs:
+        args.append(revs)
+    out = _git(root, *args)
+    return parse_log(out) if out is not None else []
+
+
+def resolve_ref(root: str | Path, ref: str) -> str | None:
+    """Full commit sha for ``ref`` (branch, tag, sha, ``HEAD~2`` ...), or None."""
+    out = _git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return out.strip() if out else None
+
+
+def ref_time(root: str | Path, ref: str) -> datetime | None:
+    """When ``ref`` was released: the tag date for an annotated tag, else the commit date."""
+    out = _git(root, "for-each-ref", "--format=%(taggerdate:iso-strict)", f"refs/tags/{ref}")
+    if not (out and out.strip()):
+        out = _git(root, "log", "-1", "--format=%cI", ref)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if proc.returncode != 0:
-        return []
-    return parse_log(proc.stdout)
+        return datetime.fromisoformat(out.strip()) if out and out.strip() else None
+    except ValueError:
+        return None
+
+
+def previous_tag(root: str | Path, ref: str) -> str | None:
+    """The nearest tag before ``ref`` (not ``ref`` itself), e.g. the previous release."""
+    out = _git(root, "describe", "--tags", "--abbrev=0", f"{ref}^")
+    return out.strip() if out else None
+
+
+def rev_list(root: str | Path, *revs: str) -> list[str]:
+    """Commit shas in ``revs`` (e.g. ``"v1.3..v1.4"``, or ``"--since=...", "v1.4"``)."""
+    out = _git(root, "rev-list", *revs)
+    return out.split() if out else []
 
 
 def parse_target(target: str, root: str | Path, base: str | Path | None = None) -> tuple[str, int]:
@@ -125,6 +166,7 @@ def site_history(
     line: int,
     since: datetime | None = None,
     max_count: int = 5,
+    revs: str | None = None,
 ) -> list[Commit]:
     """Commits that touched the function around the log call at ``path:line``."""
     try:
@@ -132,4 +174,4 @@ def site_history(
     except (OSError, UnicodeDecodeError):
         return []
     start, end = enclosing_block(source, line)
-    return line_history(root, path, start, end, since=since, max_count=max_count)
+    return line_history(root, path, start, end, since=since, max_count=max_count, revs=revs)

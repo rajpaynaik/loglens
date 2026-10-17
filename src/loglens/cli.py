@@ -6,11 +6,13 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
 from .backends import TimeRange, from_config
 from .config import Config, load_config
+from .deploys import compare_deploy, resolve_deploy
 from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
@@ -91,6 +93,12 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
         cfg.lint.spike_ratio = args.ratio
     if args.min_count is not None:
         cfg.lint.spike_min_count = args.min_count
+    if args.since_deploy:
+        if args.hours:
+            sys.exit("loglens: --hours and --since-deploy can't be combined")
+        return _deploy_spikes(args, cfg, backend, sites)
+    if args.base or args.deployed_at:
+        sys.exit("loglens: --base and --deployed-at need --since-deploy")
     current = TimeRange.last(hours)
     now = backend.count_by_line(sites, current)
     before = backend.count_by_line(sites, current.previous())
@@ -116,6 +124,37 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
                 print(f"    no commits touched this code in the last {2 * hours:g}h")
     if not spikes:
         print(f"no spikes in the last {hours:g}h vs the {hours:g}h before", file=sys.stderr)
+    return 0
+
+
+def _deploy_spikes(args: argparse.Namespace, cfg: Config, backend, sites) -> int:
+    try:
+        at = datetime.fromisoformat(args.deployed_at) if args.deployed_at else None
+        deploy = resolve_deploy(cfg.root, args.since_deploy, at=at, base=args.base)
+        report = compare_deploy(cfg.root, sites, backend, deploy, cfg.lint, commits=args.commits)
+    except ValueError as exc:
+        sys.exit(f"loglens: {exc}")
+    hours = (report.after.end - report.after.start).total_seconds() / 3600
+    release = f"{deploy.base}..{deploy.ref}" if deploy.base else f"{deploy.ref} (no earlier tag)"
+    print(
+        f"{deploy.ref} ({deploy.short_sha}) deployed {deploy.at:%Y-%m-%d %H:%M} UTC: "
+        f"{hours:.1f}h after vs {hours:.1f}h before; release {release}, "
+        f"{report.release_size} commit(s)"
+    )
+    titles = {"spike": "Spikes", "new_error": "New errors (never seen before the deploy)"}
+    for kind, title in titles.items():
+        changes = [c for c in report.changes if c.kind == kind]
+        if not changes:
+            continue
+        print(f"\n{title}:")
+        for c in changes:
+            print(f"  {c.site.id}  {c.before:,} -> {c.after:,} ({c.trend})  {c.site.template!r}")
+            for commit in c.commits:
+                print(f"      {commit.format()}")
+            if args.commits and not c.commits:
+                print("      no commit in this release touched this code")
+    if not report.changes:
+        print("\nno spikes or new errors since the deploy")
     return 0
 
 
@@ -186,6 +225,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ratio", type=float, help="minimum growth factor (default: lint.spike_ratio)")
     p.add_argument("--min-count", type=int, help="minimum emits (default: lint.spike_min_count)")
     p.add_argument("--commits", type=int, default=3, help="commits to show per line (0: none)")
+    p.add_argument(
+        "--since-deploy",
+        metavar="REF",
+        help="compare before vs after a release (git tag/sha) instead of a rolling window",
+    )
+    p.add_argument(
+        "--base", metavar="REF", help="previous release (default: the tag before --since-deploy)"
+    )
+    p.add_argument(
+        "--deployed-at",
+        metavar="TIME",
+        help="real deploy time, ISO 8601 (default: the tag or commit date)",
+    )
     p.set_defaults(func=cmd_spikes)
 
     p = sub.add_parser("history", help="commits that touched the code around a log line")

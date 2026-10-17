@@ -7,6 +7,7 @@ Run it with ``loglens mcp`` (stdio). Every tool is read-only.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from datetime import datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -16,6 +17,7 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .backends import LogBackend, TimeRange, from_config
 from .config import Config
+from .deploys import compare_deploy, resolve_deploy
 from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
@@ -24,7 +26,9 @@ from .models import LogSite
 INSTRUCTIONS = """\
 loglens maps production logs back to the Python log calls that emitted them.
 Log calls are identified as "PATH:LINE" (PATH relative to the project root).
-Start with `spikes` to find lines whose volume jumped, then `log_history` on one of them
+After a release, start with `compare_deploy` (a git tag or sha): it reports lines that
+spiked or started erroring since the deploy, with the release's commits that touched them.
+Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one of them
 to see which commits changed the surrounding code. `lint` finds log-quality problems
 (rules: `list_rules`). Tools that need production data fail if no backend is configured.
 """
@@ -153,6 +157,57 @@ def build_server(cfg: Config) -> MCPServer:
                 entry["commits"] = [_commit(c) for c in history]
             out.append(entry)
         return out
+
+    @mcp.tool(name="compare_deploy", annotations=READ_ONLY)
+    def compare_deploy_tool(
+        ref: str,
+        base: str | None = None,
+        deployed_at: str | None = None,
+        commits: int = 3,
+    ) -> dict[str, Any]:
+        """What changed in production after a release: log lines that spiked, and error lines
+        that never fired before it, each with the commits in that release that touched the
+        surrounding code.
+
+        ref is a git tag or sha. base is the previous release (default: the tag before ref).
+        deployed_at is the real deploy time in ISO 8601 (default: the tag or commit date).
+        Compares deploy..now with an equally long window just before the deploy.
+        """
+        try:
+            at = datetime.fromisoformat(deployed_at) if deployed_at else None
+            deploy = resolve_deploy(cfg.root, ref, at=at, base=base)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        b, all_sites = backend(), sites()
+        try:
+            report = compare_deploy(cfg.root, all_sites, b, deploy, cfg.lint, commits=commits)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        return {
+            "ref": deploy.ref,
+            "sha": deploy.sha,
+            "deployed_at": deploy.at.isoformat(),
+            "base": deploy.base,
+            "release_commits": report.release_size,
+            "before": {
+                "start": report.before.start.isoformat(),
+                "end": report.before.end.isoformat(),
+            },
+            "after": {"start": report.after.start.isoformat(), "end": report.after.end.isoformat()},
+            "changes": [
+                {
+                    **_site(c.site),
+                    "kind": c.kind,
+                    "before": c.before,
+                    "after": c.after,
+                    "trend": c.trend,
+                    "commits": [_commit(x) for x in c.commits],
+                }
+                for c in report.changes
+            ],
+        }
 
     @mcp.tool(annotations=READ_ONLY)
     def log_history(target: str, max_count: int = 10) -> list[dict[str, str]]:
