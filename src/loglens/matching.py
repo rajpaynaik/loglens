@@ -60,6 +60,21 @@ class Matcher:
         return None
 
 
+def sample_messages(
+    sites: Iterable[LogSite], records: Iterable[LogRecord], per_site: int = 50
+) -> dict[str, list[str]]:
+    """Up to ``per_site`` rendered messages for each site, from a batch of records."""
+    matcher = Matcher(sites)
+    out: dict[str, list[str]] = {}
+    for record in records:
+        site = matcher.match(record)
+        if site is not None:
+            messages = out.setdefault(site.id, [])
+            if len(messages) < per_site:
+                messages.append(record.message)
+    return out
+
+
 def _common_suffix_len(a: str, b: str) -> int:
     n = 0
     for x, y in zip(reversed(a), reversed(b), strict=False):

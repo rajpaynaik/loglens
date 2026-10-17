@@ -22,6 +22,7 @@ from .git import Commit, parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
+from .matching import sample_messages
 from .models import LogSite, parse_iso
 
 INSTRUCTIONS = """\
@@ -110,8 +111,19 @@ def build_server(cfg: Config) -> MCPServer:
             current = TimeRange.last(window_default)
             now = counts(b, all_sites, current)
             before = counts(b, all_sites, current.previous()) if cfg.lint.enabled("LL102") else None
+            samples = None
+            if cfg.lint.enabled("LL104"):
+                try:
+                    samples = sample_messages(all_sites, b.query_logs(current))
+                except Exception as exc:
+                    raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
             diags += lint_volume(
-                all_sites, now, cfg.lint, window=f"{window_default:g}h", previous=before
+                all_sites,
+                now,
+                cfg.lint,
+                window=f"{window_default:g}h",
+                previous=before,
+                samples=samples,
             )
         diags.sort(key=lambda d: (d.path, d.line, d.code))
         return [asdict(d) for d in diags]

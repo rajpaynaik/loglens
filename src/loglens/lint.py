@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,15 +22,31 @@ RULES: dict[str, str] = {
     "LL004": "info/debug log inside a loop",
     "LL005": "dynamic log message cannot be traced to production",
     "LL006": "log call missing required context field",
+    "LL007": "failure logged below warning",
     "LL100": "noisy log line",
     "LL101": "log line never emitted",
     "LL102": "log line spiked compared with the previous window",
+    "LL104": "log level doesn't match what the line does in production",
 }
 
 DEFAULT_PII_PATTERN = (
     r"passw(or)?d|passphrase|^pass$|secret|token|api_?key|auth(?!or)|credential|^ssn$|social_security"
     r"|credit_?card|card_?(number|no)|cvv|iban|email|phone|dob|date_of_birth"
 )
+
+
+DEFAULT_FAILURE_PATTERN = (
+    r"\b(?:fail(?:s|ed|ure|ures|ing)?|errors?|errored|exceptions?|timed out|time ?out|"
+    r"unable to|cannot|can't|could ?not|couldn't|refused|denied|unreachable|crash(?:ed)?|"
+    r"fatal|panic(?:ked)?|abort(?:ed)?)\b"
+)
+# Mentions that aren't failures: "no errors", "0 failures", "error rate".
+_NOT_A_FAILURE = re.compile(
+    r"\b(?:no|without|zero|0)\s+(?:errors?|failures?|exceptions?)\b|\berror[_ ]?rates?\b",
+    re.IGNORECASE,
+)
+LOW_LEVELS = {"debug", "info"}
+ERROR_LEVELS = {"error", "critical", "exception"}
 
 
 @dataclass
@@ -44,6 +60,15 @@ class LintConfig:
     spike_ratio: float = 5.0  # LL102: current window >= ratio x previous window ...
     spike_min_count: int = 1_000  # ... and at least this many emits
     dead_levels: set[str] = field(default_factory=lambda: {"warning", "error", "critical"})
+    failure_pattern: str = DEFAULT_FAILURE_PATTERN  # LL007 / LL104: words that mean "it failed"
+    error_noisy_threshold: int = 10_000  # LL104: error lines firing this often per window
+
+    def failure_word(self, text: str | None) -> str | None:
+        """The first failure word in ``text`` (ignoring "no errors"-style mentions), or None."""
+        if not text:
+            return None
+        m = re.search(self.failure_pattern, _NOT_A_FAILURE.sub(" ", text), re.IGNORECASE)
+        return m.group(0) if m else None
 
     def enabled(self, code: str) -> bool:
         return code in self.select and code not in self.ignore
@@ -61,6 +86,10 @@ class LintConfig:
         cfg.spike_min_count = int(data.get("spike_min_count", cfg.spike_min_count))
         if "dead_levels" in data:
             cfg.dead_levels = set(data["dead_levels"])
+        cfg.failure_pattern = data.get("failure_pattern", cfg.failure_pattern)
+        cfg.error_noisy_threshold = int(
+            data.get("error_noisy_threshold", cfg.error_noisy_threshold)
+        )
         return cfg
 
 
@@ -196,6 +225,29 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
             )
         )
 
+    if cfg.enabled("LL007") and site.level in LOW_LEVELS:
+        word = cfg.failure_word(site.template)
+        if word:
+            out.append(
+                _diag(
+                    site,
+                    "LL007",
+                    f'"{word}" is logged at {site.level}, so alerts on warning/error never see '
+                    "it; use logger.warning or logger.error",
+                )
+            )
+        elif site.in_swallowing_except:
+            out.append(
+                _diag(
+                    site,
+                    "LL007",
+                    f"a broad except swallows the error and logs it at {site.level}, so nothing "
+                    "will alert on it; log at error with exc_info=True, or catch a narrower "
+                    "exception",
+                    severity="info",
+                )
+            )
+
     if cfg.enabled("LL006") and cfg.required_fields:
         keys = _extra_keys(call)
         if keys is not None:
@@ -245,10 +297,12 @@ def lint_volume(
     cfg: LintConfig | None = None,
     window: str = "24h",
     previous: Mapping[str, int] | None = None,
+    samples: Mapping[str, Sequence[str]] | None = None,
 ) -> list[Diagnostic]:
     """Rules that need production counts from a backend.
 
     ``previous`` holds counts for the window just before the current one; LL102 needs it.
+    ``samples`` holds recent rendered messages per site id; LL104's message check needs it.
     """
     cfg = cfg or LintConfig()
     out: list[Diagnostic] = []
@@ -288,4 +342,41 @@ def lint_volume(
                         severity="info",
                     )
                 )
+        if cfg.enabled("LL104"):
+            out.extend(_severity_in_production(site, n, cfg, window, samples))
     return out
+
+
+def _severity_in_production(
+    site: LogSite,
+    n: int,
+    cfg: LintConfig,
+    window: str,
+    samples: Mapping[str, Sequence[str]] | None,
+) -> list[Diagnostic]:
+    if site.level in ERROR_LEVELS and n >= cfg.error_noisy_threshold:
+        return [
+            _diag(
+                site,
+                "LL104",
+                f"logged as {site.level} {n:,} times in the last {window}; an error that fires "
+                "constantly teaches people to ignore alerts. Fix the cause, or lower the level "
+                "if it's expected",
+                severity="info",
+            )
+        ]
+    messages = (samples or {}).get(site.id)
+    if site.level in LOW_LEVELS and messages and not cfg.failure_word(site.template):
+        words = [w for w in map(cfg.failure_word, messages) if w]
+        if words:
+            # Only the matched word is shown: the messages themselves may hold personal data.
+            return [
+                _diag(
+                    site,
+                    "LL104",
+                    f"{len(words)} of {len(messages)} sampled production messages look like "
+                    f'failures ("{words[0]}") but are logged at {site.level}; log failures at '
+                    "warning or error",
+                )
+            ]
+    return []

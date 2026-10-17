@@ -129,7 +129,7 @@ def test_cli_leaks_on_demo_app(monkeypatch, capsys):
     assert "4111 1111 1111 1111" not in captured.out + captured.err
     assert main(["leaks", "--format", "json"]) == 1
     out = json.loads(capsys.readouterr().out)
-    assert out["scanned"] == 7 and out["leaks"][0]["id"] == "app/checkout.py:13"
+    assert out["scanned"] == 8 and out["leaks"][0]["id"] == "app/checkout.py:13"
 
 
 def test_bad_leaks_config_is_a_clean_error(tmp_path, monkeypatch):

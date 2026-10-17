@@ -32,9 +32,11 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 | LL004 | `info`/`debug` log inside a loop |
 | LL005 | Message built at runtime, so it can't be traced back to production |
 | LL006 | Missing required context field in `extra=` (e.g. `trace_id`), opt-in |
+| LL007 | Failure logged below `warning` ("failed", "timeout", "could not" at `info`/`debug`), or an error swallowed by a broad `except` and logged at `info` |
 | LL100 | Noisy line: emits more than N times per window *(needs a backend)* |
 | LL101 | Warning/error line never seen in production *(needs a backend)* |
 | LL102 | Line spiked: ≥ `spike_ratio`× the previous window and ≥ `spike_min_count` emits *(needs a backend)* |
+| LL104 | Level doesn't match production: `info` lines whose real messages look like failures, or `error` lines firing constantly *(needs a backend)* |
 
 ## Install
 
@@ -83,6 +85,8 @@ required_fields = ["trace_id"]      # enables LL006
 noisy_threshold = 100000
 spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
+error_noisy_threshold = 10000       # LL104: error lines firing this often per window
+# failure_pattern = '\b(failed|timeout|declined)\b'   # LL007/LL104: what counts as a failure
 
 [cost]
 price_per_gb = 0.50                 # what your log store charges per GB ingested
@@ -185,6 +189,19 @@ the surrounding function, so unreleased work on `main` doesn't show up.
 The deploy time defaults to the tag date (annotated tags) or the commit date. If you deploy
 later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
 
+## Severity checks
+
+A payment failure logged at `info` never reaches an alert that watches `warning`/`error`.
+LL007 catches it in the code: a failure word in the message at `info`/`debug`, or an error
+swallowed by `except Exception:` (or a bare `except:`) and logged at `info`. Narrow handlers
+(`except KeyError:`) and handlers that re-raise are fine.
+
+Some lines only look like failures once rendered: `logger.info("settlement %s: %s", id,
+status)` writes `settlement 44: failed (card declined)`. With `lint --volume`, LL104 checks a
+sample of each line's real messages, and also flags `error` lines that fire constantly,
+since alert fatigue is how real errors end up downgraded to `info`. LL104 reports only the
+matched word, never the message, because messages can hold personal data.
+
 ## Cost per line
 
 In most services a handful of log calls write most of the bytes. `loglens cost` ranks every
@@ -269,7 +286,7 @@ class LogBackend(ABC):
 - [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
 - [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
-- [ ] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
+- [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [ ] Context coverage: required fields by situation (`[context]` rules such as errors need `tenant_id`, logs in retry loops need `attempt`, logs next to HTTP/DB calls need `dependency`), credit for context injected automatically (logging filters, structlog `bind_contextvars`, OpenTelemetry), and per-line field coverage measured in production (e.g. `tenant_id` present in 62% of records)
 - [ ] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
 - [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it

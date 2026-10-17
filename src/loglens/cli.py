@@ -18,6 +18,7 @@ from .git import parse_target, site_history
 from .index import DEFAULT_EXCLUDES, index_project
 from .leaks import KINDS, find_leaks
 from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
+from .matching import sample_messages
 from .models import parse_iso
 
 
@@ -58,8 +59,16 @@ def cmd_lint(args: argparse.Namespace, cfg: Config) -> int:
         previous = (
             backend.count_by_line(sites, current.previous()) if cfg.lint.enabled("LL102") else None
         )
+        samples = None
+        if cfg.lint.enabled("LL104"):
+            samples = sample_messages(sites, backend.query_logs(current))
         diags += lint_volume(
-            sites, counts, cfg.lint, window=f"{cfg.window_hours:g}h", previous=previous
+            sites,
+            counts,
+            cfg.lint,
+            window=f"{cfg.window_hours:g}h",
+            previous=previous,
+            samples=samples,
         )
     diags.sort(key=lambda d: (d.path, d.line, d.code))
     if args.format == "json":

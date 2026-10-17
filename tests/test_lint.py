@@ -65,3 +65,96 @@ def test_spike_rule():
     assert [d.line for d in diags if d.code == "LL102"] == [3]
     # without previous counts the rule can't run
     assert not any(d.code == "LL102" for d in lint_volume(sites, now, cfg))
+
+
+SEVERITY_SRC = """
+def f(order, status):
+    logger.info("payment failed for order %s", order.id)
+    logger.debug("could not reach %s", host)
+    logger.warning("payment failed for order %s", order.id)
+    logger.info("batch done with no errors")
+    logger.info("error rate is %s", rate)
+    try:
+        go()
+    except Exception:
+        logger.info("skipped %s", order.id)
+    try:
+        go()
+    except KeyError:
+        logger.info("using default for %s", key)
+    try:
+        go()
+    except Exception:
+        logger.info("retrying %s", order.id)
+        raise
+    try:
+        go()
+    except:
+        def later():
+            raise ValueError
+        logger.debug("ignored")
+    try:
+        go()
+    except (ValueError, Exception):
+        logger.info("ignored too")
+"""
+
+
+def test_severity_rule_ll007():
+    diags = [d for d in lint_source(SEVERITY_SRC, "s.py") if d.code == "LL007"]
+    got = {d.line: d.severity for d in diags}
+    assert got == {
+        3: "warning",  # "failed" at info
+        4: "warning",  # "could not" at debug
+        11: "info",  # swallowed by except Exception
+        26: "info",  # bare except; the raise is in a nested function, not the handler
+        30: "info",  # tuple containing Exception
+    }
+    # not flagged: warning level (5), "no errors" (6), "error rate" (7), narrow except (15),
+    # handler that re-raises (19)
+    assert '"failed" is logged at info' in next(d.message for d in diags if d.line == 3)
+
+
+def test_severity_rule_ll007_custom_pattern_and_ignore():
+    src = 'logger.info("payment declined for %s", x)\n'
+    assert not [d for d in lint_source(src, "a.py") if d.code == "LL007"]
+    cfg = LintConfig.from_dict({"failure_pattern": r"\bdeclined\b"})
+    assert [d.code for d in lint_source(src, "a.py", cfg)] == ["LL007"]
+    assert not lint_source(src, "a.py", LintConfig.from_dict({"ignore": ["LL007"]}))
+
+
+def test_severity_rule_ll104():
+    sites = index_source(
+        'logger.error("boom")\n'
+        'logger.info("payment %s", status)\n'
+        'logger.info("payment failed %s", x)\n'
+        'logger.info("status %s", s)\n',
+        "p.py",
+    )
+    cfg = LintConfig(error_noisy_threshold=1000)
+    counts = {"p.py:1": 5000, "p.py:2": 10, "p.py:3": 10, "p.py:4": 10}
+    samples = {
+        "p.py:2": ["payment ok", "payment failed: card declined", "payment ok"],
+        "p.py:3": ["payment failed 1"],  # template already says failed: that's LL007's job
+        "p.py:4": ["status ok", "status 0 errors"],  # "0 errors" isn't a failure
+    }
+    diags = [d for d in lint_volume(sites, counts, cfg, samples=samples) if d.code == "LL104"]
+    assert [d.line for d in diags] == [1, 2]
+    noisy, dynamic = diags
+    assert "logged as error 5,000 times" in noisy.message
+    assert dynamic.message.startswith(
+        '1 of 3 sampled production messages look like failures ("failed")'
+    )
+    assert "card declined" not in dynamic.message  # messages may hold personal data
+    # without samples only the error-volume half runs
+    assert [d.line for d in lint_volume(sites, counts, cfg) if d.code == "LL104"] == [1]
+
+
+def test_cli_lint_volume_reports_severity_on_demo(monkeypatch, capsys):
+    from loglens.cli import main
+
+    monkeypatch.chdir("examples/demo_app")
+    assert main(["lint", "--volume"]) == 1
+    out = capsys.readouterr().out
+    assert "app/checkout.py:23:9: LL007" in out and "app/checkout.py:24:5: LL007" in out
+    assert "app/checkout.py:28:5: LL104" in out

@@ -29,6 +29,7 @@ def test_file_backend_counts_demo_app():
         "app/checkout.py:15": 3,
         "app/checkout.py:11": 1,
         "app/checkout.py:13": 1,
+        "app/checkout.py:28": 1,
     }
 
 

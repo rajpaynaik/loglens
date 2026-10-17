@@ -37,6 +37,8 @@ class LogSite:
     logger: str  # source text of the receiver, e.g. "logger", "self.log"
     in_except: bool = False
     in_loop: bool = False
+    # Inside a bare / ``except Exception`` handler that never raises: the error stops here.
+    in_swallowing_except: bool = False
 
     @property
     def id(self) -> str:

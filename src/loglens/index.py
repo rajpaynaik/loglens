@@ -59,6 +59,32 @@ def extract_template(node: ast.expr) -> str | None:
     return None
 
 
+_BROAD = {"Exception", "BaseException"}
+
+
+def _is_broad(node: ast.expr | None) -> bool:
+    """``except:``, ``except Exception``, ``except (ValueError, Exception)``..."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Tuple):
+        return any(_is_broad(elt) for elt in node.elts)
+    name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None)
+    return name in _BROAD
+
+
+def _raises(handler: ast.ExceptHandler) -> bool:
+    """Whether the handler raises (re-raise or translate), ignoring nested functions."""
+    stack: list[ast.AST] = list(handler.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, path: str) -> None:
         self.path = path
@@ -67,11 +93,14 @@ class _Visitor(ast.NodeVisitor):
         self._except_depth = 0
         self._loop_depth = 0
         self._func_depth = 0
+        self._swallowing: list[bool] = []  # one entry per enclosing except handler
 
     # Track context so the linter can reason about it later.
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         self._except_depth += 1
+        self._swallowing.append(_is_broad(node.type) and not _raises(node))
         self.generic_visit(node)
+        self._swallowing.pop()
         self._except_depth -= 1
 
     def _visit_loop(self, node: ast.AST) -> None:
@@ -83,10 +112,11 @@ class _Visitor(ast.NodeVisitor):
 
     def _visit_func(self, node: ast.AST) -> None:
         # A loop outside a function doesn't make a log inside a nested def "in a loop".
-        saved = self._loop_depth, self._except_depth
+        saved = self._loop_depth, self._except_depth, self._swallowing
         self._loop_depth = self._except_depth = 0
+        self._swallowing = []
         self.generic_visit(node)
-        self._loop_depth, self._except_depth = saved
+        self._loop_depth, self._except_depth, self._swallowing = saved
 
     visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = _visit_func
 
@@ -130,6 +160,7 @@ class _Visitor(ast.NodeVisitor):
             logger=receiver,
             in_except=self._except_depth > 0,
             in_loop=self._loop_depth > 0,
+            in_swallowing_except=bool(self._swallowing) and self._swallowing[-1],
         )
 
 
