@@ -10,6 +10,7 @@ loguru ``contextualize(...)`` and ``configure(extra={...})``,
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -154,6 +155,24 @@ def _keys(fields: dict, prefix: str = "") -> Iterable[tuple[str, object]]:
             yield from _keys(value, f"{name}.")
         else:
             yield name, value
+
+
+def get_field(record: LogRecord, field: str) -> object | None:
+    """The value of ``field`` (or a synonym) at any nesting, or None."""
+    names = aliases(field)
+    for key, value in _keys(record.fields):
+        if (key in names or key.rsplit(".", 1)[-1] in names) and value is not None:
+            return value
+    return None
+
+
+def mentions(record: LogRecord, field: str, value: str) -> bool:
+    """``field`` (or a synonym) equals ``value``; if the record has no such field, ``value``
+    appears in the message as a whole word (so id ``ab1`` doesn't match ``ab12``)."""
+    found = get_field(record, field)
+    if found is not None:
+        return str(found) == value
+    return re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", record.message) is not None
 
 
 def has_field(record: LogRecord, field: str) -> bool:

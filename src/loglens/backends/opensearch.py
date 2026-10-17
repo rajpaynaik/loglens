@@ -13,6 +13,7 @@ import urllib.request
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from ..context import mentions
 from ..matching import Matcher
 from ..models import LogRecord, LogSite, Usage
 from .base import LogBackend, TimeRange, _parse_ts, measure, parse_line, tally
@@ -145,6 +146,19 @@ class OpenSearchBackend(LogBackend):
             avg = s.bytes / s.count if s and s.count else overall
             usage[sid] = Usage(count=n, bytes=round(avg * n), estimated=True)
         return usage
+
+    def find_records(
+        self, field: str, value: str, time_range: TimeRange, limit: int = 5000
+    ) -> list[LogRecord]:
+        """The value lives in its own field (``trace.id``, ``trace_id``...), not the message,
+        so search every field for the exact phrase, then check it client-side."""
+        body = self.build_query(time_range, limit=limit)
+        body["query"]["bool"]["filter"].append(
+            {"multi_match": {"query": value, "type": "phrase", "fields": ["*"], "lenient": True}}
+        )
+        body["sort"] = [{self.timestamp_field: {"order": "asc"}}]
+        records = self.parse_response(self._search(body), self.timestamp_field, self.message_field)
+        return [r for r in records if mentions(r, field, value)]
 
     def _search(self, body: dict[str, Any]) -> dict:
         req = urllib.request.Request(

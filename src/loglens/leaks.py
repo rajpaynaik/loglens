@@ -160,11 +160,8 @@ class Finding:
     masked: str
 
 
-def scan_text(text: str, cfg: LeakConfig | None = None, where: str = "message") -> list[Finding]:
-    cfg = cfg or LeakConfig()
+def _matches(text: str, cfg: LeakConfig, where: str) -> Iterable[tuple[Detector, re.Match]]:
     allow = [re.compile(a) for a in cfg.allow]
-    out: list[Finding] = []
-    seen: set[tuple[str, str]] = set()
     for d in DETECTORS:
         if d.kind in cfg.ignore:
             continue
@@ -173,11 +170,34 @@ def scan_text(text: str, cfg: LeakConfig | None = None, where: str = "message") 
             context = f"{where} {text[max(0, m.start() - 40) : m.start()]}"
             if d.validate and not d.validate(value, context):
                 continue
-            if any(a.search(value) for a in allow) or (d.kind, value) in seen:
-                continue
+            if not any(a.search(value) for a in allow):
+                yield d, m
+
+
+def scan_text(text: str, cfg: LeakConfig | None = None, where: str = "message") -> list[Finding]:
+    out: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+    for d, m in _matches(text, cfg or LeakConfig(), where):
+        value = m.group(d.group)
+        if (d.kind, value) not in seen:
             seen.add((d.kind, value))
             out.append(Finding(d.kind, d.category, where, mask(d.kind, value)))
     return out
+
+
+def redact(text: str, cfg: LeakConfig | None = None, where: str = "message") -> str:
+    """``text`` with every detected secret / personal value replaced by its masked form."""
+    spans = sorted(
+        (m.start(d.group), m.end(d.group), mask(d.kind, m.group(d.group)))
+        for d, m in _matches(text, cfg or LeakConfig(), where)
+    )
+    out, pos = [], 0
+    for start, end, masked in spans:
+        if start < pos:
+            continue  # overlaps an earlier match
+        out += [text[pos:start], masked]
+        pos = end
+    return "".join(out) + text[pos:]
 
 
 def scan_record(record: LogRecord, cfg: LeakConfig | None = None) -> list[Finding]:

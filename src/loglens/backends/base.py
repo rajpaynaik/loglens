@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from ..context import mentions
 from ..matching import Matcher
 from ..models import LogRecord, LogSite, Usage, parse_iso
 
@@ -48,6 +49,18 @@ class LogBackend(ABC):
         that can aggregate server-side (e.g. on a ``lineno`` label) should override this.
         """
         return tally(Matcher(sites), {}, self.query_logs(time_range, limit=limit))
+
+    def find_records(
+        self, field: str, value: str, time_range: TimeRange, limit: int = 5000
+    ) -> list[LogRecord]:
+        """Records whose ``field`` (or a synonym, e.g. ``traceId`` for ``trace_id``) equals
+        ``value``; records without the field count if their message mentions it.
+
+        The default narrows with the backend's text filter (``contains``) and checks fields
+        client-side, which works for every backend whose stored line includes the value.
+        """
+        records = self.query_logs(time_range, contains=value, limit=limit)
+        return [r for r in records if mentions(r, field, value)]
 
     def usage_by_line(
         self, sites: Iterable[LogSite], time_range: TimeRange, limit: int = 5000

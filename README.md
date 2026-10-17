@@ -20,6 +20,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
 - **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `loglens cost` in the terminal), so you fix the few lines that make up most of the bill.
+- **Request timeline**: `loglens trace <trace_id>` shows every log line for one request across services, in order, with this repo's lines linked to the code that wrote them and the first warning flagged as a likely cause.
 - **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
 - **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
@@ -63,6 +64,7 @@ loglens spikes             # lines that jumped vs the previous window, with susp
 loglens spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
 loglens history app/checkout.py:7   # commits that touched the code around a log line
 loglens leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
+loglens trace 4bf92f35...  # every log line for one request, across services, in order
 loglens serve              # language server on stdio (used by editors)
 loglens mcp                # MCP server on stdio (used by AI assistants)
 ```
@@ -107,6 +109,14 @@ injected = ["trace_id"]             # added outside the code, e.g. by your log s
 price_per_gb = 0.50                 # what your log store charges per GB ingested
 price_per_million_events = 0        # per-event indexing charges, if your vendor has them
 # currency = "€"
+
+[timeline]                          # loglens trace
+field = "trace_id"                  # or request_id; common spellings (traceId, trace.id) match
+service = "checkout"                # this repo's name in the timeline (default: its folder)
+[timeline.backend]                  # optional: a wider scope than [backend], e.g. every service
+type = "loki"
+url = "http://localhost:3100"
+selector = '{env="prod"}'
 
 [leaks]
 ignore = ["email"]                  # detector kinds to skip
@@ -154,6 +164,7 @@ All tools are read-only:
 
 | Tool | What it answers |
 |------|-----------------|
+| `request_timeline` | What happened to request `4bf92f35…`, service by service, and where did it first go wrong? |
 | `compare_deploy` | What spiked or started erroring after release `v1.4.0`, and which commits in it are to blame? |
 | `spikes` | Which log lines jumped vs the previous window, and which commits touched that code since? |
 | `log_history` | Which commits changed the function around `app/checkout.py:42`? |
@@ -324,6 +335,39 @@ Set `price_per_gb` to what you pay for ingestion (CloudWatch Logs is about $0.50
 to set because they vary by vendor, plan and region. Once a price is set, the editor shows
 the cost next to each log call and in its hover.
 
+## Following a request
+
+A failed checkout is hard to read service by service: the gateway returns a 504, checkout
+logs a timeout, inventory logs a warning. In order, the cause is obvious:
+
+```
+$ loglens trace 4bf92f3577b34da6a3ce929d0e0e4703
+trace_id=4bf92f3577b34da6a3ce929d0e0e4703: 7 line(s) from 3 service(s) over 2.015s
+
++     0.0ms   gateway    info    POST /checkout
++     3.0ms   checkout   info    checkout_started  app/checkout.py:7
++     5.0ms   inventory  INFO    reserve request
++  2005.0ms ~ inventory  WARN    db pool exhausted, waited 2000ms
++  2010.0ms ! checkout   error   inventory_timeout  app/checkout.py:11
++  2011.0ms   checkout   info    charging card ************1111  app/checkout.py:13
++  2015.0ms ! gateway    error   POST /checkout 504
+
+first problem: inventory (WARN): db pool exhausted, waited 2000ms
+first error: checkout at app/checkout.py:11 (error): inventory_timeout
+```
+
+- Lines this repo wrote link to their log call; other services show the service name
+  (from `service`, `service.name`, `app`, `container`, CloudWatch log stream, ...).
+- The id matches the field and its common spellings (`traceId`, `trace.id`), or the
+  message as a whole word when a record has no such field.
+- `[backend]` is usually scoped to one service. Point `[timeline.backend]` at a wider scope
+  (`{env="prod"}`, `logs-*`) to see the whole path.
+- Secrets and personal data in messages are masked, so it's safe to hand to an AI assistant
+  (`request_timeline` over MCP).
+
+This needs a shared id in the logs. Context rules (`[context] all = ["trace_id"]`) and
+`loglens context --production` check that it's there.
+
 ## Leak scanning
 
 LL002 guesses from variable names (`password`, `card_number`) in the code. `loglens leaks`
@@ -390,7 +434,7 @@ class LogBackend(ABC):
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
 - [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs
 - [x] Structured messages: flag values interpolated into the message (`"order %s failed"`) and offer an editor quick fix that moves them into `extra=` fields, plus a per-service structure score
-- [ ] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
+- [x] Request timeline MCP tool: given a `trace_id`, every log line from every service for that request, in order, each linked to the code line that wrote it
 
 ## Contributing
 

@@ -70,6 +70,7 @@ def test_tools_are_read_only(project):
         "structure_score",
         "spikes",
         "compare_deploy",
+        "request_timeline",
         "find_leaks",
         "log_history",
     }

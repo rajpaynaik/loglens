@@ -1,5 +1,5 @@
 """Command-line interface: ``loglens index | lint | context | structure | counts | cost | spikes |
-history | leaks | serve | mcp``."""
+history | trace | leaks | serve | mcp``."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from .lint import RULES, SITUATIONS, describe_trend, find_spikes, lint_paths, li
 from .matching import sample_records
 from .models import parse_iso
 from .structure import production_score, score_project
+from .timeline import find_timeline, timeline_json
 
 
 def _sites(cfg: Config, path: str | None):
@@ -29,9 +30,9 @@ def _sites(cfg: Config, path: str | None):
     return index_project(root, DEFAULT_EXCLUDES | set(cfg.excludes))
 
 
-def _backend_or_exit(cfg: Config):
+def _backend_or_exit(cfg: Config, settings: dict | None = None):
     try:
-        backend = from_config(cfg.backend)
+        backend = from_config(cfg.backend if settings is None else settings)
     except (ValueError, RuntimeError) as exc:
         sys.exit(f"loglens: bad [backend] config: {exc}")
     if backend is None:
@@ -274,6 +275,63 @@ def _humanize(n: float) -> str:
     return f"{n:.0f}"
 
 
+def cmd_trace(args: argparse.Namespace, cfg: Config) -> int:
+    tcfg = cfg.timeline
+    backend = _backend_or_exit(cfg, tcfg.backend or None)
+    field_name = args.field or tcfg.field_name
+    hours = args.hours or cfg.window_hours
+    tl = find_timeline(
+        backend,
+        _sites(cfg, None),
+        field_name,
+        args.value,
+        TimeRange.last(hours),
+        limit=args.limit,
+        here=tcfg.service,
+        leaks=cfg.leaks,
+    )
+    if args.format == "json":
+        json.dump(timeline_json(tl), sys.stdout, indent=2)
+        print()
+        return 0 if tl.entries else 1
+    if not tl.entries:
+        print(f"no logs with {field_name}={args.value} in the last {hours:g}h", file=sys.stderr)
+        return 1
+    took = f" over {tl.duration.total_seconds():.3f}s" if tl.duration else ""
+    print(
+        f"{field_name}={args.value}: {len(tl.entries)} line(s) from "
+        f"{len(tl.services)} service(s){took}\n"
+    )
+    start = next((e.timestamp for e in tl.entries if e.timestamp), None)
+    width = max(len(e.service or "?") for e in tl.entries)
+    for e in tl.entries:
+        offset = (
+            f"+{(e.timestamp - start).total_seconds() * 1000:>8.1f}ms"
+            if start and e.timestamp
+            else " " * 11
+        )
+        mark = "!" if e.is_error else ("~" if e.is_problem else " ")
+        where = f"  {e.site.id}" if e.site else ""
+        print(
+            f"{offset} {mark} {(e.service or '?'):<{width}}  {(e.level or '-'):<7} "
+            f"{e.message[:120]}{where}"
+        )
+    sys.stdout.flush()
+    summary = []
+    if tl.first_problem is not None and tl.first_problem is not tl.first_error:
+        summary.append(("first problem", tl.first_problem))  # a warning before the failure
+    if tl.first_error is not None:
+        summary.append(("first error", tl.first_error))
+    for i, (label, e) in enumerate(summary):
+        where = f" at {e.site.id}" if e.site else ""
+        print(
+            f"{'' if i else chr(10)}{label}: {e.service or '?'}{where} ({e.level}): "
+            f"{e.message[:120]}",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def cmd_leaks(args: argparse.Namespace, cfg: Config) -> int:
     backend = _backend_or_exit(cfg)
     sites = _sites(cfg, None)
@@ -493,6 +551,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=5000, help="records to sample when not aggregated")
     p.add_argument("--format", choices=["text", "json"], default="text")
     p.set_defaults(func=cmd_cost)
+
+    p = sub.add_parser("trace", help="every log line for one request, across services, in order")
+    p.add_argument("value", help="the trace / request id")
+    p.add_argument("--field", help="field to match (default: [timeline] field, trace_id)")
+    p.add_argument("--hours", type=float)
+    p.add_argument("--limit", type=int, default=1000)
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_trace)
 
     p = sub.add_parser("leaks", help="secrets and personal data in production logs, per log call")
     p.add_argument("--hours", type=float)

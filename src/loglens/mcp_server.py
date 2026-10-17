@@ -26,10 +26,12 @@ from .lint import RULES, describe_trend, find_spikes, lint_paths, lint_volume
 from .matching import sample_records
 from .models import LogSite, parse_iso
 from .structure import production_score, score_project
+from .timeline import find_timeline, timeline_json
 
 INSTRUCTIONS = """\
 loglens maps production logs back to the Python log calls that emitted them.
 Log calls are identified as "PATH:LINE" (PATH relative to the project root).
+To follow one failed request across services, use `request_timeline` with its trace id.
 After a release, start with `compare_deploy` (a git tag or sha): it reports lines that
 spiked or started erroring since the deploy, with the release's commits that touched them.
 Otherwise start with `spikes` to find lines whose volume jumped, then `log_history` on one
@@ -362,6 +364,47 @@ def build_server(cfg: Config) -> MCPServer:
                 for s in sorted(report.unstructured, key=lambda s: -now.get(s.id, 0))[:10]
                 if now.get(s.id)
             ]
+        return out
+
+    @mcp.tool(annotations=READ_ONLY)
+    def request_timeline(
+        value: str, field: str | None = None, hours: float | None = None, limit: int = 1000
+    ) -> dict[str, Any]:
+        """Every log line for one request, across services, in time order: the way to follow
+        a failed request end to end. value is the trace id (or request id; set `field`).
+        Lines written by this codebase include the log call ("site") that wrote them;
+        secrets and personal data in messages are masked.
+        """
+        tcfg = cfg.timeline
+        try:
+            b = from_config(tcfg.backend) if tcfg.backend else backend()
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(f"bad [timeline.backend] config: {exc}") from exc
+        if b is None:
+            raise ToolError("no [backend] configured in loglens.toml or [tool.loglens]")
+        try:
+            tl = find_timeline(
+                b,
+                sites(),
+                field or tcfg.field_name,
+                value,
+                TimeRange.last(hours or window_default),
+                limit=limit,
+                here=tcfg.service,
+                leaks=cfg.leaks,
+            )
+        except Exception as exc:
+            raise ToolError(f"couldn't query the {b.name} backend: {exc}") from exc
+        out = timeline_json(tl)
+
+        def brief(e):
+            if e is None:
+                return None
+            site = e.site.id if e.site else None
+            return {"service": e.service, "level": e.level, "message": e.message, "site": site}
+
+        out["first_problem"] = brief(tl.first_problem)
+        out["first_error"] = brief(tl.first_error)
         return out
 
     @mcp.tool(annotations=READ_ONLY)

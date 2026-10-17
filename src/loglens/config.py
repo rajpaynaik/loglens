@@ -20,6 +20,14 @@ Example ``loglens.toml``::
     near_dependency = ["dependency"]
     injected = ["trace_id"]          # added outside the code (e.g. by a log shipper)
 
+    [timeline]                       # loglens trace <id>
+    field = "trace_id"
+    service = "checkout"             # this codebase's name in the timeline
+    [timeline.backend]               # optional: a wider scope than [backend], so other
+    type = "loki"                    # services' lines show up too
+    url = "http://localhost:3100"
+    selector = '{env="prod"}'
+
     [leaks]                          # loglens leaks
     ignore = ["email"]               # detector kinds to skip
     allow = ['@example\\.com$']       # regexes for values that are fine (test data)
@@ -49,12 +57,20 @@ from .lint import LintConfig
 
 
 @dataclass
+class TimelineConfig:
+    field_name: str = "trace_id"  # [timeline] field
+    service: str | None = None  # defaults to the project directory's name
+    backend: dict = field(default_factory=dict)  # empty: use [backend]
+
+
+@dataclass
 class Config:
     root: Path
     backend: dict = field(default_factory=dict)
     lint: LintConfig = field(default_factory=LintConfig)
     leaks: LeakConfig = field(default_factory=LeakConfig)
     cost: CostConfig = field(default_factory=CostConfig)
+    timeline: TimelineConfig = field(default_factory=TimelineConfig)
     window_hours: float = 24.0
     excludes: list[str] = field(default_factory=list)
 
@@ -71,6 +87,16 @@ def find_root(start: Path) -> Path:
     return start
 
 
+def _resolve_backend(backend: dict, root: Path) -> dict:
+    """Read ``*_env`` keys from the environment and make file paths absolute."""
+    for key in list(backend):
+        if key.endswith("_env"):
+            backend.setdefault(key[: -len("_env")], os.environ.get(backend[key]))
+    if backend.get("type") == "file" and "path" in backend:
+        backend["path"] = str((root / backend["path"]).resolve())
+    return backend
+
+
 def load_config(start: str | Path | None = None) -> Config:
     root = find_root(Path(start or Path.cwd()))
     data: dict = {}
@@ -80,12 +106,10 @@ def load_config(start: str | Path | None = None) -> Config:
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
         data = pyproject.get("tool", {}).get("loglens", {})
 
-    backend = dict(data.get("backend", {}))
-    for key in list(backend):
-        if key.endswith("_env"):
-            backend.setdefault(key[: -len("_env")], os.environ.get(backend[key]))
-    if backend.get("type") == "file" and "path" in backend:
-        backend["path"] = str((root / backend["path"]).resolve())
+    backend = _resolve_backend(dict(data.get("backend", {})), root)
+
+    timeline = dict(data.get("timeline", {}))
+    timeline_backend = _resolve_backend(dict(timeline.get("backend", {})), root)
 
     return Config(
         root=root,
@@ -93,6 +117,11 @@ def load_config(start: str | Path | None = None) -> Config:
         lint=LintConfig.from_dict(data.get("lint", {}), context=data.get("context", {})),
         leaks=LeakConfig.from_dict(data.get("leaks", {})),
         cost=CostConfig.from_dict(data.get("cost", {})),
+        timeline=TimelineConfig(
+            field_name=str(timeline.get("field", "trace_id")),
+            service=timeline.get("service") or root.name,
+            backend=timeline_backend,
+        ),
         window_hours=float(data.get("window_hours", 24)),
         excludes=list(data.get("exclude", [])),
     )
