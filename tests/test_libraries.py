@@ -6,11 +6,11 @@ import sys
 
 import pytest
 
-from loglens.backends import FileBackend, TimeRange, parse_line
-from loglens.context import detect_in_source
-from loglens.fixes import structured_rewrite
-from loglens.index import index_calls, index_project, index_source
-from loglens.lint import LintConfig, lint_source
+from logsite.backends import FileBackend, TimeRange, parse_line
+from logsite.context import detect_in_source
+from logsite.fixes import structured_rewrite
+from logsite.index import index_calls, index_project, index_source
+from logsite.lint import LintConfig, lint_source
 
 SRC = """
 import logging

@@ -159,7 +159,7 @@ class LintConfig:
         cfg.select |= set(data.get("extend_select", []))
         unknown = (cfg.select | set(data.get("ignore", []))) - set(RULES)
         if unknown:
-            raise ValueError(f"unknown lint rule(s) {sorted(unknown)}; see `loglens rules`")
+            raise ValueError(f"unknown lint rule(s) {sorted(unknown)}; see `logsite rules`")
         cfg.ignore = set(data.get("ignore", []))
         cfg.pii_pattern = data.get("pii_pattern", cfg.pii_pattern)
         cfg.required_fields = list(data.get("required_fields", []))
@@ -338,7 +338,7 @@ def check_call(site: LogSite, call: ast.Call, cfg: LintConfig, pii: re.Pattern) 
             _diag(
                 site,
                 "LL005",
-                "message is built at runtime, so loglens can't match production logs to this "
+                "message is built at runtime, so logsite can't match production logs to this "
                 "line; use a literal template",
                 severity="hint",
             )
@@ -487,7 +487,7 @@ def lint_volume(
                         site,
                         "LL102",
                         f"spiked to {n:,} in the last {window}, up from {before:,} the window "
-                        f"before; see recent changes: loglens history {site.id}",
+                        f"before; see recent changes: logsite history {site.id}",
                         severity="info",
                     )
                 )

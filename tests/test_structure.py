@@ -3,11 +3,11 @@ import json
 
 import pytest
 
-from loglens.cli import main
-from loglens.fixes import constant_message, field_name, structured_rewrite
-from loglens.index import index_calls
-from loglens.lint import LintConfig, lint_source
-from loglens.structure import production_score, score_project
+from logsite.cli import main
+from logsite.fixes import constant_message, field_name, structured_rewrite
+from logsite.index import index_calls
+from logsite.lint import LintConfig, lint_source
+from logsite.structure import production_score, score_project
 
 SRC = """
 logger.error("payment failed for order %s: %s", order.id, err)
@@ -137,7 +137,7 @@ def test_cli_structure(tmp_path, monkeypatch, capsys):
     (tmp_path / "app.py").write_text('logger.info("ok")\nlogger.info("user %s", u)\n')
     rows = [{"message": "user 1", "lineno": 2}] * 3 + [{"message": "ok", "lineno": 1}]
     (tmp_path / "prod.log").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    (tmp_path / "loglens.toml").write_text('[backend]\ntype = "file"\npath = "prod.log"\n')
+    (tmp_path / "logsite.toml").write_text('[backend]\ntype = "file"\npath = "prod.log"\n')
     monkeypatch.chdir(tmp_path)
     assert main(["structure", "--production"]) == 0
     out = capsys.readouterr().out

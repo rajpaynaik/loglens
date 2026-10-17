@@ -1,6 +1,6 @@
 """AWS CloudWatch Logs adapter using ``FilterLogEvents``.
 
-Needs boto3: ``pip install 'loglens[cloudwatch]'``. Credentials come from the usual AWS
+Needs boto3: ``pip install 'logsite[cloudwatch]'``. Credentials come from the usual AWS
 chain (env vars, ``~/.aws``, instance role), optionally narrowed to a named ``profile``.
 """
 
@@ -35,7 +35,7 @@ class CloudWatchBackend(LogBackend):
                 import boto3
             except ImportError:
                 raise RuntimeError(
-                    "the cloudwatch backend needs boto3: pip install 'loglens[cloudwatch]'"
+                    "the cloudwatch backend needs boto3: pip install 'logsite[cloudwatch]'"
                 ) from None
             client = boto3.Session(profile_name=profile, region_name=region).client("logs")
         self.client = client

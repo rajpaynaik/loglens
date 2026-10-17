@@ -3,10 +3,10 @@ import random
 
 import pytest
 
-from loglens.backends import parse_line
-from loglens.cli import main
-from loglens.index import index_source
-from loglens.leaks import LeakConfig, find_leaks, mask, scan_record, scan_text
+from logsite.backends import parse_line
+from logsite.cli import main
+from logsite.index import index_source
+from logsite.leaks import LeakConfig, find_leaks, mask, scan_record, scan_text
 
 
 def kinds(text, **kw):
@@ -133,7 +133,7 @@ def test_cli_leaks_on_demo_app(monkeypatch, capsys):
 
 
 def test_bad_leaks_config_is_a_clean_error(tmp_path, monkeypatch):
-    (tmp_path / "loglens.toml").write_text('[leaks]\nignore = ["emails"]\n')
+    (tmp_path / "logsite.toml").write_text('[leaks]\nignore = ["emails"]\n')
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit, match="bad config: unknown leak kind"):
         main(["index"])

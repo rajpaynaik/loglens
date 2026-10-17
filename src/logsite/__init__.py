@@ -1,4 +1,4 @@
-"""loglens: production log volume and log-quality checks, inline next to your log calls."""
+"""logsite: production log volume and log-quality checks, inline next to your log calls."""
 
 from .index import index_project, index_source
 from .lint import LintConfig, lint_source

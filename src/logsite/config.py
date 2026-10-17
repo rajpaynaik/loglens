@@ -1,6 +1,8 @@
-"""Load configuration from ``loglens.toml`` or ``[tool.loglens]`` in ``pyproject.toml``.
+"""Load configuration from ``logsite.toml`` or ``[tool.logsite]`` in ``pyproject.toml``.
 
-Example ``loglens.toml``::
+The project was called loglens before; ``loglens.toml`` and ``[tool.loglens]`` still work.
+
+Example ``logsite.toml``::
 
     [backend]
     type = "loki"
@@ -20,7 +22,7 @@ Example ``loglens.toml``::
     near_dependency = ["dependency"]
     injected = ["trace_id"]          # added outside the code (e.g. by a log shipper)
 
-    [timeline]                       # loglens trace <id>
+    [timeline]                       # logsite trace <id>
     field = "trace_id"
     service = "checkout"             # this codebase's name in the timeline
     [timeline.backend]               # optional: a wider scope than [backend], so other
@@ -28,11 +30,11 @@ Example ``loglens.toml``::
     url = "http://localhost:3100"
     selector = '{env="prod"}'
 
-    [leaks]                          # loglens leaks
+    [leaks]                          # logsite leaks
     ignore = ["email"]               # detector kinds to skip
     allow = ['@example\\.com$']       # regexes for values that are fine (test data)
 
-    [cost]                           # loglens cost, $/mo in the editor
+    [cost]                           # logsite cost, $/mo in the editor
     price_per_gb = 0.50              # what your log store charges per GB ingested
     price_per_million_events = 0     # per-event indexing charges, if any
 
@@ -75,11 +77,14 @@ class Config:
     excludes: list[str] = field(default_factory=list)
 
 
+CONFIG_FILES = ("logsite.toml", "loglens.toml")  # loglens: the project's previous name
+
+
 def find_root(start: Path) -> Path:
     start = start.resolve()
     for d in [start, *start.parents]:
         if (
-            (d / "loglens.toml").is_file()
+            any((d / name).is_file() for name in CONFIG_FILES)
             or (d / "pyproject.toml").is_file()
             or (d / ".git").exists()
         ):
@@ -100,11 +105,12 @@ def _resolve_backend(backend: dict, root: Path) -> dict:
 def load_config(start: str | Path | None = None) -> Config:
     root = find_root(Path(start or Path.cwd()))
     data: dict = {}
-    if (root / "loglens.toml").is_file():
-        data = tomllib.loads((root / "loglens.toml").read_text(encoding="utf-8"))
+    config_file = next((root / n for n in CONFIG_FILES if (root / n).is_file()), None)
+    if config_file is not None:
+        data = tomllib.loads(config_file.read_text(encoding="utf-8"))
     elif (root / "pyproject.toml").is_file():
-        pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-        data = pyproject.get("tool", {}).get("loglens", {})
+        tool = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")).get("tool", {})
+        data = tool.get("logsite", tool.get("loglens", {}))
 
     backend = _resolve_backend(dict(data.get("backend", {})), root)
 

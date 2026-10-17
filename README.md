@@ -1,4 +1,4 @@
-# loglens
+# logsite
 
 **See how often each log line fires in production, and catch bad logging, right next to the `logger.info(...)` call in your editor.**
 
@@ -8,10 +8,12 @@ logger.debug(f"card {card_number} charged")                            # ⚠ LL0
 logger.warning("legacy discount path used for order %s", order.id)     # no logs in 24h  ← dead code?
 ```
 
-loglens indexes every log call in your code, maps production logs back to the exact line that emitted them, and shows the result inline through the Language Server Protocol, so it works in VS Code, Neovim, JetBrains (LSP plugin), Helix, Zed and others.
+logsite indexes every log call in your code, maps production logs back to the exact line that emitted them, and shows the result inline through the Language Server Protocol, so it works in VS Code, Neovim, JetBrains (LSP plugin), Helix, Zed and others.
 
 It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudWatch Logs are supported. Each backend is one small Python class.
 
+> Formerly **loglens**: existing `loglens.toml` / `[tool.loglens]` configs keep working.
+>
 > Status: **pre-alpha**. Python codebases only, for now. Feedback and contributors welcome.
 
 ## Features
@@ -19,10 +21,10 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 - **Log index**: finds every log call using `ast`: the standard `logging` module, **structlog** and **loguru**, including `%`-style, f-string, `.format()` and loguru `{}` templates, and chained calls like `log.bind(user_id=u).info(...)`.
 - **Production counts per line**: code lens above each log call (`1.2M in 24h`), with a `▲ 8.0x` marker when the line spiked compared with the window before.
 - **MCP server**: AI assistants (Claude Code, Claude Desktop, Cursor, …) can ask "which log lines spiked after the last deploy, and what changed?" See [MCP server](#mcp-server).
-- **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `loglens cost` in the terminal), so you fix the few lines that make up most of the bill.
-- **Request timeline**: `loglens trace <trace_id>` shows every log line for one request across services, in order, with this repo's lines linked to the code that wrote them and the first warning flagged as a likely cause.
+- **Cost per line**: bytes and estimated monthly spend for every log call (`$420/mo` in the editor, `logsite cost` in the terminal), so you fix the few lines that make up most of the bill.
+- **Request timeline**: `logsite trace <trace_id>` shows every log line for one request across services, in order, with this repo's lines linked to the code that wrote them and the first warning flagged as a likely cause.
 - **Leak scanning**: finds secrets (API keys, tokens, passwords, private keys) and personal data (emails, card numbers, IBANs, SSNs) in what your services *actually* logged, and points at the log call that wrote each one. Values are always masked in the report.
-- **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `loglens spikes` lists the lines that jumped, with the commits that likely caused it.
+- **Git correlation**: hover a log call to see its trend and the last commits that touched the function around it; `logsite spikes` lists the lines that jumped, with the commits that likely caused it.
 - **Log-quality linter**: works offline and in CI:
 
 | Code  | Rule |
@@ -44,7 +46,7 @@ It doesn't depend on any one vendor: Loki, OpenSearch / Elasticsearch and CloudW
 ## Install
 
 ```bash
-pip install "loglens[lsp]"        # editor support; add ,mcp for the MCP server
+pip install "logsite[lsp]"        # editor support; add ,mcp for the MCP server
                                   # from source for now: pip install -e ".[dev]"
 ```
 
@@ -52,26 +54,26 @@ pip install "loglens[lsp]"        # editor support; add ,mcp for the MCP server
 
 ```bash
 cd examples/demo_app
-loglens index              # list every log call
-loglens lint               # static log-quality checks (exit 1 on findings, good for CI)
-loglens context            # required context fields, and what's already added automatically
-loglens context --production   # how often real records actually carry them, per log call
-loglens structure          # share of log calls with a constant message + fields (--production: by volume)
-loglens counts             # production counts per line, from the configured backend
-loglens cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
-loglens lint --volume      # static + volume rules
-loglens spikes             # lines that jumped vs the previous window, with suspect commits
-loglens spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
-loglens history app/checkout.py:7   # commits that touched the code around a log line
-loglens leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
-loglens trace 4bf92f35...  # every log line for one request, across services, in order
-loglens serve              # language server on stdio (used by editors)
-loglens mcp                # MCP server on stdio (used by AI assistants)
+logsite index              # list every log call
+logsite lint               # static log-quality checks (exit 1 on findings, good for CI)
+logsite context            # required context fields, and what's already added automatically
+logsite context --production   # how often real records actually carry them, per log call
+logsite structure          # share of log calls with a constant message + fields (--production: by volume)
+logsite counts             # production counts per line, from the configured backend
+logsite cost --price-per-gb 0.5   # bytes and $/month per log call, most expensive first
+logsite lint --volume      # static + volume rules
+logsite spikes             # lines that jumped vs the previous window, with suspect commits
+logsite spikes --since-deploy v1.4.0   # what changed after a release, with that release's commits
+logsite history app/checkout.py:7   # commits that touched the code around a log line
+logsite leaks              # secrets / personal data in production logs, per log call (exit 1 if any)
+logsite trace 4bf92f35...  # every log line for one request, across services, in order
+logsite serve              # language server on stdio (used by editors)
+logsite mcp                # MCP server on stdio (used by AI assistants)
 ```
 
 ## Configuration
 
-`loglens.toml` at your project root, or `[tool.loglens]` in `pyproject.toml`:
+`logsite.toml` at your project root, or `[tool.logsite]` in `pyproject.toml`:
 
 ```toml
 window_hours = 24
@@ -91,7 +93,7 @@ ignore = ["LL004"]
 extend_select = ["LL008"]           # opt-in rules on top of the defaults
 required_fields = ["trace_id"]      # LL006 for every log; see [context] for situational rules
 noisy_threshold = 100000
-spike_ratio = 5                     # LL102 / `loglens spikes`: growth vs the previous window
+spike_ratio = 5                     # LL102 / `logsite spikes`: growth vs the previous window
 spike_min_count = 1000              # ... and at least this many emits
 error_noisy_threshold = 10000       # LL104: error lines firing this often per window
 # failure_pattern = '\b(failed|timeout|declined)\b'   # LL007/LL104: what counts as a failure
@@ -110,7 +112,7 @@ price_per_gb = 0.50                 # what your log store charges per GB ingeste
 price_per_million_events = 0        # per-event indexing charges, if your vendor has them
 # currency = "€"
 
-[timeline]                          # loglens trace
+[timeline]                          # logsite trace
 field = "trace_id"                  # or request_id; common spellings (traceId, trace.id) match
 service = "checkout"                # this repo's name in the timeline (default: its folder)
 [timeline.backend]                  # optional: a wider scope than [backend], e.g. every service
@@ -141,7 +143,7 @@ aggregate = true                    # count per file/line with a composite aggre
 ```
 
 ```toml
-[backend]                           # AWS CloudWatch Logs: pip install "loglens[cloudwatch]"
+[backend]                           # AWS CloudWatch Logs: pip install "logsite[cloudwatch]"
 type = "cloudwatch"
 log_group = "/ecs/checkout"
 region = "us-east-1"
@@ -152,14 +154,14 @@ region = "us-east-1"
 
 ## MCP server
 
-`loglens mcp` exposes loglens to AI assistants over the [Model Context Protocol](https://modelcontextprotocol.io).
-Install it with `pip install "loglens[mcp]"`, then register it. For Claude Code:
+`logsite mcp` exposes logsite to AI assistants over the [Model Context Protocol](https://modelcontextprotocol.io).
+Install it with `pip install "logsite[mcp]"`, then register it. For Claude Code:
 
 ```bash
-claude mcp add loglens -- loglens --config-dir /path/to/your/project mcp
+claude mcp add logsite -- logsite --config-dir /path/to/your/project mcp
 ```
 
-Other clients take the same command (`loglens --config-dir <project> mcp`) in their MCP config.
+Other clients take the same command (`logsite --config-dir <project> mcp`) in their MCP config.
 All tools are read-only:
 
 | Tool | What it answers |
@@ -179,7 +181,7 @@ All tools are read-only:
 
 ## structlog and loguru
 
-loglens works out which library each logger comes from (`log = structlog.get_logger()`,
+logsite works out which library each logger comes from (`log = structlog.get_logger()`,
 `from loguru import logger`, `std = logging.getLogger(__name__)`, whatever the variable is
 called) and applies the right conventions:
 
@@ -202,7 +204,7 @@ loguru includes it automatically with `logger.add(sink, serialize=True)`.
 
 ## How log → line matching works
 
-Matching production logs to source lines is the hard part. loglens tries two methods, most reliable first:
+Matching production logs to source lines is the hard part. logsite tries two methods, most reliable first:
 
 1. **Structured fields.** If your logs carry `pathname`/`filename` + `lineno` (or the ECS `log.origin.file.*` / OpenTelemetry `code.*` equivalents), matching is exact. Python's `logging` provides these for free; for example with [python-json-logger](https://github.com/nhairs/python-json-logger):
    ```python
@@ -214,7 +216,7 @@ Adding `pathname` + `lineno` to your log format is the biggest accuracy upgrade 
 
 ### Counting at scale
 
-By default loglens downloads up to 5,000 log lines per window and matches them itself, so
+By default logsite downloads up to 5,000 log lines per window and matches them itself, so
 counts on busy services are capped and quieter lines can be missed entirely. With
 `aggregate = true` (Loki and OpenSearch/Elasticsearch), the log store does the counting
 per file and line, for example `sum by (pathname, lineno) (count_over_time(...))` in Loki,
@@ -224,14 +226,14 @@ matched by template, so only those are subject to the cap.
 ## How spikes map to commits
 
 Each refresh fetches counts for the current window and the one just before it. A line whose
-count grew by `spike_ratio` (and passed `spike_min_count`) is a spike. loglens then runs
+count grew by `spike_ratio` (and passed `spike_min_count`) is a spike. logsite then runs
 `git log -L` over the **whole function** that contains the log call, because a line usually
 spikes when its callers or surrounding logic change, not the log call itself. Line numbers
 refer to `HEAD`, so uncommitted edits above the function can shift the range.
 
 ### After a release
 
-`loglens spikes --since-deploy v1.4.0` compares each line from the deploy until now with an
+`logsite spikes --since-deploy v1.4.0` compares each line from the deploy until now with an
 equally long window just before it. Besides spikes, it lists **new errors**: error lines that
 never fired before the deploy, even a handful of times. For each one it shows only the
 commits **in that release** (from the previous tag, or `--base`, up to `v1.4.0`) that touched
@@ -243,7 +245,7 @@ later than you tag, pass the real time: `--deployed-at 2026-10-16T14:05:00Z`.
 ## Context rules
 
 `database timeout`, with no query, duration, retry count or request ID, can't be acted on.
-LL006 requires context fields by situation, which loglens works out from the code:
+LL006 requires context fields by situation, which logsite works out from the code:
 
 | Situation | When | Typical fields |
 |-----------|------|----------------|
@@ -252,17 +254,17 @@ LL006 requires context fields by situation, which loglens works out from the cod
 | `in_retry` | a loop with `try`/`except` that sleeps or counts attempts, or a `@retry` / `@backoff` function | `attempt` |
 | `near_dependency` | an `except` around a call to `requests`, `httpx`, `boto3`, `cursor.execute` or a `*client` / `*session` / `*gateway` | `dependency`, `status_code` |
 
-The right way to add common context is once, for every log, not on each call. loglens
+The right way to add common context is once, for every log, not on each call. logsite
 credits fields that the project adds automatically: a logging filter or record factory
 that sets `record.request_id`, structlog `bind_contextvars(...)` or processors,
 `LoggerAdapter(logger, {...})` extras, and OpenTelemetry's logging instrumentation (which
 satisfies `trace_id` / `span_id`). Common spellings count as the same field
-(`requestId`, `correlation_id`). `loglens context` shows the rules, what was found and where,
+(`requestId`, `correlation_id`). `logsite context` shows the rules, what was found and where,
 and how many log calls are missing what.
 
 Code can look right and still lose context: a filter that only some handlers have, a
 thread or async task that doesn't copy the context, a background job with no request.
-`loglens context --production` checks what real records carry:
+`logsite context --production` checks what real records carry:
 
 ```
 In production (last 24h, 115 sampled record(s)):
@@ -296,7 +298,7 @@ quick fix does the rewrite: it names fields after the expressions (`order.id` �
 merges into an existing `extra={...}`, and avoids `LogRecord` attribute names (`msg`,
 `name`, ...) that would raise at runtime. It only offers the fix when the rewrite is safe.
 
-`loglens structure` scores the codebase by top-level directory, and with `--production`
+`logsite structure` scores the codebase by top-level directory, and with `--production`
 by real volume, listing the loudest unstructured lines (the ones most worth converting).
 
 ## Severity checks
@@ -314,7 +316,7 @@ matched word, never the message, because messages can hold personal data.
 
 ## Cost per line
 
-In most services a handful of log calls write most of the bytes. `loglens cost` ranks every
+In most services a handful of log calls write most of the bytes. `logsite cost` ranks every
 log call by projected monthly spend (usage over the configured window, scaled to 30 days):
 
 ```
@@ -341,7 +343,7 @@ A failed checkout is hard to read service by service: the gateway returns a 504,
 logs a timeout, inventory logs a warning. In order, the cause is obvious:
 
 ```
-$ loglens trace 4bf92f3577b34da6a3ce929d0e0e4703
+$ logsite trace 4bf92f3577b34da6a3ce929d0e0e4703
 trace_id=4bf92f3577b34da6a3ce929d0e0e4703: 7 line(s) from 3 service(s) over 2.015s
 
 +     0.0ms   gateway    info    POST /checkout
@@ -366,11 +368,11 @@ first error: checkout at app/checkout.py:11 (error): inventory_timeout
   (`request_timeline` over MCP).
 
 This needs a shared id in the logs. Context rules (`[context] all = ["trace_id"]`) and
-`loglens context --production` check that it's there.
+`logsite context --production` check that it's there.
 
 ## Leak scanning
 
-LL002 guesses from variable names (`password`, `card_number`) in the code. `loglens leaks`
+LL002 guesses from variable names (`password`, `card_number`) in the code. `logsite leaks`
 checks what really reached production: it scans the message and every structured field of
 recent log records (up to `--limit`, default 5,000) and groups findings by the log call
 that wrote them, secrets first.
@@ -386,7 +388,7 @@ app/checkout.py:13  1 record(s)  'card {} charged'
 | Personal data | Emails, card numbers (Luhn-checked, plus card-style grouping or a nearby word like "card"), IBANs (checksum-validated), US SSNs |
 
 Card numbers are the classic false positive: a bare 16-digit order ID passes the checksum
-1 time in 10. loglens only flags one when it is grouped like a card (`4111 1111 …`) or
+1 time in 10. logsite only flags one when it is grouped like a card (`4111 1111 …`) or
 appears near a card-related word or in a card-named field.
 
 Matched values are never printed in full, so the report is safe to keep in CI logs.
@@ -406,7 +408,7 @@ Python core (pygls)  ── also exposed as an MCP server (mcp_server.py)
                                                    * = roadmap
 ```
 
-Every backend implements one interface ([`backends/base.py`](src/loglens/backends/base.py)):
+Every backend implements one interface ([`backends/base.py`](src/logsite/backends/base.py)):
 
 ```python
 class LogBackend(ABC):
@@ -425,11 +427,11 @@ class LogBackend(ABC):
 - [x] Server-side aggregation for Loki and OpenSearch (`aggregate = true`) for large volumes
 - [x] structlog and loguru: indexing, library-aware lint rules and quick fixes, loguru JSON parsing
 - [ ] Other languages: Go `slog`, Java SLF4J, Node pino
-- [x] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `loglens cost`, with a configurable price per GB
+- [x] Cost per log line: bytes and estimated spend per line (not just counts), shown in the code lens and as `logsite cost`, with a configurable price per GB
 - [ ] Audit event coverage: declare sensitive code paths (e.g. functions that change permissions, money or personal data) and the audit events they must emit; lint flags paths that don't, and checks that audit events never carry PII
-- [x] Deploy-aware comparison: `loglens spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
+- [x] Deploy-aware comparison: `logsite spikes --since-deploy <sha|tag>` compares error and volume per line before vs after a real release instead of a rolling window
 - [x] Leak scanning in production logs: sample real log contents for secrets and personal data (tokens, card numbers, emails) and point to the code line that emitted each leak
-- [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on loglens data
+- [ ] More MCP tools for incident investigation: recent messages for a line, errors that started after a deploy, so AI assistants can do root-cause analysis on logsite data
 - [x] Severity correctness: flag log levels that don't match the event, statically (`info`/`debug` inside `except`, or messages like "failed"/"timeout" logged below `warning`) and from production (INFO lines whose messages look like failures, ERROR lines firing constantly at high volume), so failures aren't hidden from alerting
 - [x] Context rules in code: required fields by situation (`[context]`: errors, retry loops, dependency calls), with credit for context injected automatically (logging filters, structlog contextvars, LoggerAdapter, OpenTelemetry)
 - [x] Context coverage in production: per-line field coverage measured from real records (e.g. `tenant_id` present in 62% of records), to catch context lost in threads, async tasks and background jobs

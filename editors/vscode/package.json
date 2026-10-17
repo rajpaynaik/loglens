@@ -1,28 +1,28 @@
 {
-  "name": "loglens",
-  "displayName": "loglens",
+  "name": "logsite",
+  "displayName": "logsite",
   "description": "Production log counts and log-quality checks inline, next to your log calls.",
   "version": "0.1.0",
   "publisher": "rajpaynaik",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/rajpaynaik/loglens" },
+  "repository": { "type": "git", "url": "https://github.com/rajpaynaik/logsite" },
   "engines": { "vscode": "^1.90.0" },
   "categories": ["Linters", "Other"],
   "activationEvents": ["onLanguage:python"],
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
-      "title": "loglens",
+      "title": "logsite",
       "properties": {
-        "loglens.serverCommand": {
+        "logsite.serverCommand": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["loglens", "serve"],
-          "description": "Command that starts the loglens language server. Install it with: pip install 'loglens[lsp]'"
+          "default": ["logsite", "serve"],
+          "description": "Command that starts the logsite language server. Install it with: pip install 'logsite[lsp]'"
         }
       }
     },
-    "commands": [{ "command": "loglens.restart", "title": "loglens: Restart server" }]
+    "commands": [{ "command": "logsite.restart", "title": "logsite: Restart server" }]
   },
   "scripts": {
     "compile": "tsc -p .",

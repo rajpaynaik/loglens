@@ -5,12 +5,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from conftest import V2, git
 
-from loglens.backends import FileBackend
-from loglens.cli import main
-from loglens.deploys import compare_deploy, resolve_deploy
-from loglens.git import previous_tag, ref_time
-from loglens.index import index_project
-from loglens.lint import LintConfig
+from logsite.backends import FileBackend
+from logsite.cli import main
+from logsite.deploys import compare_deploy, resolve_deploy
+from logsite.git import previous_tag, ref_time
+from logsite.index import index_project
+from logsite.lint import LintConfig
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 DEPLOYED = NOW - timedelta(hours=1)
@@ -46,7 +46,7 @@ def release(repo):
     ] * 5
     lines += [line(after, 17, "void failed for order 3")] * 3
     (repo / "prod.log").write_text("\n".join(lines) + "\n")
-    (repo / "loglens.toml").write_text(
+    (repo / "logsite.toml").write_text(
         '[backend]\ntype = "file"\npath = "prod.log"\n'
         "[lint]\nspike_ratio = 5\nspike_min_count = 10\n"
     )

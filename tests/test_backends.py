@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from loglens.backends import (
+from logsite.backends import (
     CloudWatchBackend,
     FileBackend,
     LokiBackend,
@@ -16,7 +16,7 @@ from loglens.backends import (
     from_config,
     opensearch,
 )
-from loglens.index import index_project
+from logsite.index import index_project
 
 DEMO = Path(__file__).parent.parent / "examples" / "demo_app"
 

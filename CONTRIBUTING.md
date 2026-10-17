@@ -1,4 +1,4 @@
-# Contributing to loglens
+# Contributing to logsite
 
 Thanks for helping! Issues and PRs are welcome.
 
@@ -10,26 +10,26 @@ pip install -e ".[dev]"
 pytest -q && ruff check src tests && ruff format --check src tests
 ```
 
-Try it against the demo: `cd examples/demo_app && loglens lint --volume && loglens counts`.
+Try it against the demo: `cd examples/demo_app && logsite lint --volume && logsite counts`.
 
 ## Project layout
 
 | Path | What |
 |------|------|
-| `src/loglens/index.py` | AST scan for log calls → `LogSite` |
-| `src/loglens/matching.py` | production `LogRecord` → `LogSite` |
-| `src/loglens/backends/` | one file per log store; implement `LogBackend.query_logs` |
-| `src/loglens/lint.py` | lint rules (`LL0xx` static, `LL1xx` volume) |
-| `src/loglens/git.py` | `git log -L` history for the function around a log call |
-| `src/loglens/context.py` | finds context added to every log automatically (filters, structlog, OTel) |
-| `src/loglens/fixes.py` | editor quick fixes (LL008: values → `extra=`) |
-| `src/loglens/structure.py` | structure score (`loglens structure`) |
-| `src/loglens/timeline.py` | request timeline across services (`loglens trace`) |
-| `src/loglens/cost.py` | per-line usage → monthly cost (`loglens cost`) |
-| `src/loglens/leaks.py` | secret / personal-data detectors over production log contents |
-| `src/loglens/deploys.py` | before/after-release comparison (`spikes --since-deploy`) |
-| `src/loglens/server.py` | language server (pygls) |
-| `src/loglens/mcp_server.py` | MCP server for AI assistants (`loglens mcp`) |
+| `src/logsite/index.py` | AST scan for log calls → `LogSite` |
+| `src/logsite/matching.py` | production `LogRecord` → `LogSite` |
+| `src/logsite/backends/` | one file per log store; implement `LogBackend.query_logs` |
+| `src/logsite/lint.py` | lint rules (`LL0xx` static, `LL1xx` volume) |
+| `src/logsite/git.py` | `git log -L` history for the function around a log call |
+| `src/logsite/context.py` | finds context added to every log automatically (filters, structlog, OTel) |
+| `src/logsite/fixes.py` | editor quick fixes (LL008: values → `extra=`) |
+| `src/logsite/structure.py` | structure score (`logsite structure`) |
+| `src/logsite/timeline.py` | request timeline across services (`logsite trace`) |
+| `src/logsite/cost.py` | per-line usage → monthly cost (`logsite cost`) |
+| `src/logsite/leaks.py` | secret / personal-data detectors over production log contents |
+| `src/logsite/deploys.py` | before/after-release comparison (`spikes --since-deploy`) |
+| `src/logsite/server.py` | language server (pygls) |
+| `src/logsite/mcp_server.py` | MCP server for AI assistants (`logsite mcp`) |
 | `editors/vscode/` | thin VS Code client |
 
 ## Good first contributions

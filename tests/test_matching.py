@@ -1,6 +1,6 @@
-from loglens.backends import parse_line
-from loglens.index import index_source
-from loglens.matching import Matcher
+from logsite.backends import parse_line
+from logsite.index import index_source
+from logsite.matching import Matcher
 
 SRC = """
 logger.info("user %s logged in from %s", uid, ip)
@@ -36,7 +36,7 @@ def test_bare_placeholder_template_never_matches():
 def test_parse_iso_handles_z_and_offsets():
     from datetime import datetime, timedelta, timezone
 
-    from loglens.models import parse_iso
+    from logsite.models import parse_iso
 
     assert parse_iso("2026-10-17T00:35:51Z") == datetime(
         2026, 10, 17, 0, 35, 51, tzinfo=timezone.utc

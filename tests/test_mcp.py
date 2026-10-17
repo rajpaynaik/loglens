@@ -9,8 +9,8 @@ pytest.importorskip("mcp")
 from conftest import V2, git  # noqa: E402
 from mcp import Client  # noqa: E402
 
-from loglens.config import load_config  # noqa: E402
-from loglens.mcp_server import build_server  # noqa: E402
+from logsite.config import load_config  # noqa: E402
+from logsite.mcp_server import build_server  # noqa: E402
 
 
 def call(root, tool, args=None):
@@ -43,7 +43,7 @@ def project(repo):
     lines += [line(90, 8, "charging order 99")]  # previous hour
     lines += [line(15, 13, "refunding order 1")] * 5 + [line(80, 13, "refunding order 2")] * 5
     (repo / "prod.log").write_text("\n".join(lines) + "\n")
-    (repo / "loglens.toml").write_text(
+    (repo / "logsite.toml").write_text(
         'window_hours = 1\n[backend]\ntype = "file"\npath = "prod.log"\n'
         "[lint]\nspike_ratio = 5\nspike_min_count = 10\n"
     )

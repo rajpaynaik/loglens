@@ -17,7 +17,7 @@ __all__ = [
 
 
 def from_config(cfg: dict) -> LogBackend | None:
-    """Build a backend from the ``[backend]`` table of the loglens config.
+    """Build a backend from the ``[backend]`` table of the logsite config.
 
     Raises ValueError for a bad config and RuntimeError if the backend's extra isn't installed.
     """

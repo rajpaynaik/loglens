@@ -2,7 +2,7 @@
 
 With ``aggregate = true``, counts are computed by Loki itself with one metric query
 (``sum by (pathname, lineno) (count_over_time(...))``), so they aren't capped by the number
-of log lines loglens can download. Only lines without file/line fields are still fetched
+of log lines logsite can download. Only lines without file/line fields are still fetched
 and matched by template.
 """
 

@@ -1,4 +1,4 @@
-"""Core data types shared by every loglens module."""
+"""Core data types shared by every logsite module."""
 
 from __future__ import annotations
 

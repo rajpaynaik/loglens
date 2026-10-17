@@ -4,12 +4,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from test_backends import stub_server
 
-from loglens.backends import FileBackend, LokiBackend, OpenSearchBackend, TimeRange, parse_line
-from loglens.cli import main
-from loglens.context import mentions
-from loglens.index import index_source
-from loglens.models import LogRecord
-from loglens.timeline import build_timeline
+from logsite.backends import FileBackend, LokiBackend, OpenSearchBackend, TimeRange, parse_line
+from logsite.cli import main
+from logsite.context import mentions
+from logsite.index import index_source
+from logsite.models import LogRecord
+from logsite.timeline import build_timeline
 
 TID = "4bf92f3577b34da6a3ce929d0e0e4703"
 T0 = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
@@ -134,7 +134,7 @@ def project(tmp_path):
         )
         + "\n"
     )
-    (tmp_path / "loglens.toml").write_text(
+    (tmp_path / "logsite.toml").write_text(
         '[backend]\ntype = "file"\npath = "ours.log"\n'
         '[timeline]\nservice = "checkout"\n'
         '[timeline.backend]\ntype = "file"\npath = "all.log"\n'

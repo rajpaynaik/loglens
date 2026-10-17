@@ -2,9 +2,9 @@ from datetime import datetime, timedelta, timezone
 
 from conftest import V1
 
-from loglens.backends import TimeRange
-from loglens.cli import main
-from loglens.git import enclosing_block, line_history, parse_log, site_history
+from logsite.backends import TimeRange
+from logsite.cli import main
+from logsite.git import enclosing_block, line_history, parse_log, site_history
 
 
 def test_enclosing_block_picks_innermost_function():

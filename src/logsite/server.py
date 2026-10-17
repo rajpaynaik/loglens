@@ -41,9 +41,9 @@ def humanize(n: int) -> str:
     return str(n)
 
 
-class LoglensServer(LanguageServer):
+class LogsiteServer(LanguageServer):
     def __init__(self) -> None:
-        super().__init__("loglens", __version__)
+        super().__init__("logsite", __version__)
         self.cfg: Config | None = None
         self.counts: dict[str, int] = {}
         self.costs: dict[str, LineCost] = {}  # only when [cost] has a price
@@ -73,7 +73,7 @@ class LoglensServer(LanguageServer):
             ),
             message=d.message,
             code=d.code,
-            source="loglens",
+            source="logsite",
             severity=SEVERITY.get(d.severity, types.DiagnosticSeverity.Warning),
         )
 
@@ -105,7 +105,7 @@ class LoglensServer(LanguageServer):
         except (ValueError, RuntimeError) as exc:
             self.window_show_message(
                 types.ShowMessageParams(
-                    type=types.MessageType.Error, message=f"loglens: bad [backend] config: {exc}"
+                    type=types.MessageType.Error, message=f"logsite: bad [backend] config: {exc}"
                 )
             )
             return
@@ -129,11 +129,11 @@ class LoglensServer(LanguageServer):
                 for uri in list(self.workspace.text_documents):
                     self.publish(uri)
             except Exception as exc:  # keep the server alive if the backend is down
-                log.warning("loglens: failed to fetch counts from %s: %s", backend.name, exc)
+                log.warning("logsite: failed to fetch counts from %s: %s", backend.name, exc)
                 self.window_show_message(
                     types.ShowMessageParams(
                         type=types.MessageType.Warning,
-                        message=f"loglens: couldn't reach {backend.name} backend: {exc}",
+                        message=f"logsite: couldn't reach {backend.name} backend: {exc}",
                     )
                 )
             self._stop.wait(REFRESH_SECONDS)
@@ -171,18 +171,18 @@ class LoglensServer(LanguageServer):
         return commits
 
 
-server = LoglensServer()
+server = LogsiteServer()
 
 
 @server.feature(types.INITIALIZED)
-def on_initialized(ls: LoglensServer, params: types.InitializedParams) -> None:
+def on_initialized(ls: LogsiteServer, params: types.InitializedParams) -> None:
     root = ls.workspace.root_path or str(Path.cwd())
     try:
         ls.cfg = load_config(root)
     except ValueError as exc:
         ls.window_show_message(
             types.ShowMessageParams(
-                type=types.MessageType.Error, message=f"loglens: bad config: {exc}"
+                type=types.MessageType.Error, message=f"logsite: bad config: {exc}"
             )
         )
         return
@@ -191,22 +191,22 @@ def on_initialized(ls: LoglensServer, params: types.InitializedParams) -> None:
 
 
 @server.feature(types.SHUTDOWN)
-def on_shutdown(ls: LoglensServer, params: None) -> None:
+def on_shutdown(ls: LogsiteServer, params: None) -> None:
     ls._stop.set()
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_OPEN)
-def did_open(ls: LoglensServer, params: types.DidOpenTextDocumentParams) -> None:
+def did_open(ls: LogsiteServer, params: types.DidOpenTextDocumentParams) -> None:
     ls.publish(params.text_document.uri)
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
-def did_change(ls: LoglensServer, params: types.DidChangeTextDocumentParams) -> None:
+def did_change(ls: LogsiteServer, params: types.DidChangeTextDocumentParams) -> None:
     ls.publish(params.text_document.uri)
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
-def did_save(ls: LoglensServer, params: types.DidSaveTextDocumentParams) -> None:
+def did_save(ls: LogsiteServer, params: types.DidSaveTextDocumentParams) -> None:
     uri = params.text_document.uri
     path = ls.rel_path(uri)
     if ls.cfg and path:
@@ -220,7 +220,7 @@ def did_save(ls: LoglensServer, params: types.DidSaveTextDocumentParams) -> None
 
 
 @server.feature(types.TEXT_DOCUMENT_CODE_LENS)
-def code_lens(ls: LoglensServer, params: types.CodeLensParams) -> list[types.CodeLens]:
+def code_lens(ls: LogsiteServer, params: types.CodeLensParams) -> list[types.CodeLens]:
     if not ls.cfg or not ls.counts_ready:
         return []
     uri = params.text_document.uri
@@ -249,7 +249,7 @@ def code_lens(ls: LoglensServer, params: types.CodeLensParams) -> list[types.Cod
 
 
 @server.feature(types.TEXT_DOCUMENT_HOVER)
-def hover(ls: LoglensServer, params: types.HoverParams) -> types.Hover | None:
+def hover(ls: LogsiteServer, params: types.HoverParams) -> types.Hover | None:
     if not ls.cfg:
         return None
     uri = params.text_document.uri
@@ -272,7 +272,7 @@ def hover(ls: LoglensServer, params: types.HoverParams) -> types.Hover | None:
     if ls.counts_ready:
         window = f"{ls.cfg.window_hours:g}h"
         n, before = ls.counts.get(site.id, 0), ls.previous_counts.get(site.id, 0)
-        parts.append(f"**loglens**: {n:,} in the last {window} (previous {window}: {before:,})")
+        parts.append(f"**logsite**: {n:,} in the last {window} (previous {window}: {before:,})")
         if is_spike(n, before, ls.cfg.lint):
             parts[-1] += f", **spiked {describe_trend(n, before)}**"
         cost = ls.costs.get(site.id)
@@ -306,7 +306,7 @@ def hover(ls: LoglensServer, params: types.HoverParams) -> types.Hover | None:
     types.TEXT_DOCUMENT_CODE_ACTION,
     types.CodeActionOptions(code_action_kinds=[types.CodeActionKind.QuickFix]),
 )
-def code_action(ls: LoglensServer, params: types.CodeActionParams) -> list[types.CodeAction]:
+def code_action(ls: LogsiteServer, params: types.CodeActionParams) -> list[types.CodeAction]:
     """LL008 quick fix: move formatted values into extra=."""
     wanted = [d for d in params.context.diagnostics if d.code == "LL008"]
     if not ls.cfg or not wanted:
@@ -333,7 +333,7 @@ def code_action(ls: LoglensServer, params: types.CodeActionParams) -> list[types
         )
         actions.append(
             types.CodeAction(
-                title="loglens: move values into extra= (constant message)",
+                title="logsite: move values into extra= (constant message)",
                 kind=types.CodeActionKind.QuickFix,
                 diagnostics=[diag],
                 is_preferred=True,

@@ -1,4 +1,4 @@
-"""The one interface every backend implements. Nothing else in loglens knows the vendor."""
+"""The one interface every backend implements. Nothing else in logsite knows the vendor."""
 
 from __future__ import annotations
 

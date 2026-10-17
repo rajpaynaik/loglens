@@ -1,6 +1,6 @@
-from loglens.backends import parse_line
-from loglens.index import index_source
-from loglens.lint import LintConfig, lint_source, lint_volume
+from logsite.backends import parse_line
+from logsite.index import index_source
+from logsite.lint import LintConfig, lint_source, lint_volume
 
 SRC = """
 def f(user, password, items, ctx):
@@ -155,7 +155,7 @@ def test_severity_rule_ll104():
 
 
 def test_cli_lint_volume_reports_severity_on_demo(monkeypatch, capsys):
-    from loglens.cli import main
+    from logsite.cli import main
 
     monkeypatch.chdir("examples/demo_app")
     assert main(["lint", "--volume"]) == 1

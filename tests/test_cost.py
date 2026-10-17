@@ -4,17 +4,17 @@ from pathlib import Path
 import pytest
 from test_backends import CW_EVENTS, DEMO, FakeLogs, _hit, stub_server
 
-from loglens.backends import (
+from logsite.backends import (
     CloudWatchBackend,
     FileBackend,
     LokiBackend,
     OpenSearchBackend,
     TimeRange,
 )
-from loglens.cli import main
-from loglens.cost import CostConfig, format_bytes, format_money, monthly_costs
-from loglens.index import index_project, index_source
-from loglens.models import Usage
+from logsite.cli import main
+from logsite.cost import CostConfig, format_bytes, format_money, monthly_costs
+from logsite.index import index_project, index_source
+from logsite.models import Usage
 
 ALL_TIME = TimeRange.last(24 * 365 * 10)
 
@@ -139,7 +139,7 @@ def test_mcp_log_costs(tmp_path):
     (project / "app").mkdir(parents=True)
     (project / "app" / "checkout.py").write_text((DEMO / "app" / "checkout.py").read_text())
     (project / "sample.log").write_text((DEMO / "sample.log").read_text())
-    (project / "loglens.toml").write_text(
+    (project / "logsite.toml").write_text(
         'window_hours = 87600\n[backend]\ntype = "file"\npath = "sample.log"\n'
         "[cost]\nprice_per_gb = 0.5\n"
     )

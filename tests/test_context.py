@@ -2,17 +2,17 @@ import json
 
 import pytest
 
-from loglens.cli import main
-from loglens.context import (
+from logsite.cli import main
+from logsite.context import (
     detect_in_source,
     has_field,
     measure_coverage,
     overall_coverage,
     satisfied,
 )
-from loglens.index import index_source, is_dependency_call
-from loglens.lint import ContextRules, LintConfig, lint_paths, lint_source, lint_volume
-from loglens.models import LogRecord
+from logsite.index import index_source, is_dependency_call
+from logsite.lint import ContextRules, LintConfig, lint_paths, lint_source, lint_volume
+from logsite.models import LogRecord
 
 SITUATIONS_SRC = """
 import time
@@ -202,7 +202,7 @@ def test_context_config_and_cli(tmp_path, monkeypatch, capsys):
         'logger.error("boom")\n'
         'logger.info("ok")\n'
     )
-    (tmp_path / "loglens.toml").write_text(
+    (tmp_path / "logsite.toml").write_text(
         '[context]\nall = ["request_id"]\nerror = ["tenant_id"]\n'
     )
     monkeypatch.chdir(tmp_path)
@@ -212,7 +212,7 @@ def test_context_config_and_cli(tmp_path, monkeypatch, capsys):
     assert "1 of 2 log call(s) are missing context:" in out
     assert "1  tenant_id (errors)" in out
 
-    (tmp_path / "loglens.toml").write_text('[context]\nerrors = ["tenant_id"]\n')
+    (tmp_path / "logsite.toml").write_text('[context]\nerrors = ["tenant_id"]\n')
     with pytest.raises(SystemExit, match=r"unknown \[context\] key\(s\) \['errors'\]"):
         main(["context"])
 
@@ -291,7 +291,7 @@ def test_cli_context_production(tmp_path, monkeypatch, capsys):
     rows += [{"message": "order created 2", "lineno": 3}] * 10
     (tmp_path / "app.py").write_text(COVERAGE_SRC)
     (tmp_path / "prod.log").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    (tmp_path / "loglens.toml").write_text(
+    (tmp_path / "logsite.toml").write_text(
         '[backend]\ntype = "file"\npath = "prod.log"\n[context]\nall = ["request_id"]\n'
     )
     monkeypatch.chdir(tmp_path)
@@ -310,7 +310,7 @@ def test_mcp_context_coverage(tmp_path):
     rows = [{"message": "order created 1", "lineno": 3}] * 25
     (tmp_path / "app.py").write_text(COVERAGE_SRC)
     (tmp_path / "prod.log").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    (tmp_path / "loglens.toml").write_text(
+    (tmp_path / "logsite.toml").write_text(
         '[backend]\ntype = "file"\npath = "prod.log"\n[context]\nall = ["request_id"]\n'
     )
     err, out = call(tmp_path, "context_coverage")

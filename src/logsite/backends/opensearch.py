@@ -1,7 +1,7 @@
 """OpenSearch / Elasticsearch adapter using the ``_search`` REST API (stdlib only).
 
 With ``aggregate = true``, counts come from a composite aggregation over the file and line
-fields, so they aren't capped by how many documents loglens can download. Only documents
+fields, so they aren't capped by how many documents logsite can download. Only documents
 without a line field are still fetched and matched by template.
 """
 

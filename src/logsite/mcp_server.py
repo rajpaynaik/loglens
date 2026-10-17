@@ -1,7 +1,7 @@
 """MCP server: lets AI assistants query the log index, lint results, production counts,
 spikes and git history, e.g. "which log lines spiked after the last deploy?"
 
-Run it with ``loglens mcp`` (stdio). Every tool is read-only.
+Run it with ``logsite mcp`` (stdio). Every tool is read-only.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from .structure import production_score, score_project
 from .timeline import find_timeline, timeline_json
 
 INSTRUCTIONS = """\
-loglens maps production logs back to the Python log calls that emitted them.
+logsite maps production logs back to the Python log calls that emitted them.
 Log calls are identified as "PATH:LINE" (PATH relative to the project root).
 To follow one failed request across services, use `request_timeline` with its trace id.
 After a release, start with `compare_deploy` (a git tag or sha): it reports lines that
@@ -56,7 +56,7 @@ def _site(s: LogSite) -> dict[str, Any]:
 
 
 def build_server(cfg: Config) -> MCPServer:
-    mcp = MCPServer("loglens", version=__version__, instructions=INSTRUCTIONS)
+    mcp = MCPServer("logsite", version=__version__, instructions=INSTRUCTIONS)
     window_default = cfg.window_hours
 
     def sites() -> list[LogSite]:
@@ -69,7 +69,7 @@ def build_server(cfg: Config) -> MCPServer:
         except (ValueError, RuntimeError) as exc:
             raise ToolError(f"bad [backend] config: {exc}") from exc
         if b is None:
-            raise ToolError("no [backend] configured in loglens.toml or [tool.loglens]")
+            raise ToolError("no [backend] configured in logsite.toml or [tool.logsite]")
         return b
 
     def counts(b: LogBackend, all_sites: list[LogSite], time_range: TimeRange) -> dict[str, int]:
@@ -97,7 +97,7 @@ def build_server(cfg: Config) -> MCPServer:
 
     @mcp.tool(annotations=READ_ONLY)
     def list_rules() -> dict[str, str]:
-        """loglens lint rules: LL0xx are static, LL1xx need production counts."""
+        """logsite lint rules: LL0xx are static, LL1xx need production counts."""
         return dict(RULES)
 
     @mcp.tool(annotations=READ_ONLY)
@@ -183,7 +183,7 @@ def build_server(cfg: Config) -> MCPServer:
     ) -> list[dict[str, Any]]:
         """Log calls whose volume over the last `hours` grew by at least `ratio`x compared
         with the `hours` before, with the commits that touched the surrounding function in
-        that time (the likely causes). Defaults come from the project's loglens config.
+        that time (the likely causes). Defaults come from the project's logsite config.
         """
         lint_cfg = replace(
             cfg.lint,
@@ -293,7 +293,7 @@ def build_server(cfg: Config) -> MCPServer:
     @mcp.tool(annotations=READ_ONLY)
     def context_coverage(hours: float | None = None, limit: int = 5000) -> dict[str, Any]:
         """How often production records actually carry the context fields the project
-        requires ([context] in loglens.toml: request_id, tenant_id, ...), overall and per log
+        requires ([context] in logsite.toml: request_id, tenant_id, ...), overall and per log
         call. Low coverage on a field that's added automatically means that setup doesn't run
         on some code paths (threads, async tasks, background jobs).
         """
@@ -381,7 +381,7 @@ def build_server(cfg: Config) -> MCPServer:
         except (ValueError, RuntimeError) as exc:
             raise ToolError(f"bad [timeline.backend] config: {exc}") from exc
         if b is None:
-            raise ToolError("no [backend] configured in loglens.toml or [tool.loglens]")
+            raise ToolError("no [backend] configured in logsite.toml or [tool.logsite]")
         try:
             tl = find_timeline(
                 b,

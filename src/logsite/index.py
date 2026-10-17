@@ -235,7 +235,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_Try(self, node: ast.Try) -> None:
         calls_dependency = _calls_dependency(node.body)
         for handler in node.handlers:
-            handler._loglens_dependency = calls_dependency  # type: ignore[attr-defined]
+            handler._logsite_dependency = calls_dependency  # type: ignore[attr-defined]
         self.generic_visit(node)
 
     visit_TryStar = visit_Try
@@ -243,7 +243,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         self._except_depth += 1
         self._swallowing.append(_is_broad(node.type) and not _raises(node))
-        self._dependency.append(getattr(node, "_loglens_dependency", False))
+        self._dependency.append(getattr(node, "_logsite_dependency", False))
         self.generic_visit(node)
         self._dependency.pop()
         self._swallowing.pop()

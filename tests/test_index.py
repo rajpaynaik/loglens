@@ -1,4 +1,4 @@
-from loglens.index import index_source
+from logsite.index import index_source
 
 SRC = """
 import logging

@@ -1,4 +1,4 @@
-"""Command-line interface: ``loglens index | lint | context | structure | counts | cost | spikes |
+"""Command-line interface: ``logsite index | lint | context | structure | counts | cost | spikes |
 history | trace | leaks | serve | mcp``."""
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ def _backend_or_exit(cfg: Config, settings: dict | None = None):
     try:
         backend = from_config(cfg.backend if settings is None else settings)
     except (ValueError, RuntimeError) as exc:
-        sys.exit(f"loglens: bad [backend] config: {exc}")
+        sys.exit(f"logsite: bad [backend] config: {exc}")
     if backend is None:
-        sys.exit("loglens: no [backend] configured in loglens.toml or [tool.loglens]")
+        sys.exit("logsite: no [backend] configured in logsite.toml or [tool.logsite]")
     return backend
 
 
@@ -88,7 +88,7 @@ def cmd_lint(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_context(args: argparse.Namespace, cfg: Config) -> int:
     rules = cfg.lint.context
     rules.detected = detect_injected(cfg.root, DEFAULT_EXCLUDES | set(cfg.excludes))
-    print("Required fields ([context] in loglens.toml):")
+    print("Required fields ([context] in logsite.toml):")
     required = {"all": [*cfg.lint.required_fields, *rules.all]} | {
         k: getattr(rules, k) for k in SITUATIONS if k != "all"
     }
@@ -114,7 +114,7 @@ def cmd_context(args: argparse.Namespace, cfg: Config) -> int:
     for part, n in sorted(missing.items(), key=lambda kv: -kv[1]):
         print(f"  {n:>5}  {part}")
     if diags and not args.quiet:
-        print("\n`loglens lint` lists each call site (LL006)")
+        print("\n`logsite lint` lists each call site (LL006)")
     if args.production:
         return _production_coverage(args, cfg, sites) or (1 if diags else 0)
     return 1 if diags else 0
@@ -380,10 +380,10 @@ def cmd_spikes(args: argparse.Namespace, cfg: Config) -> int:
         cfg.lint.spike_min_count = args.min_count
     if args.since_deploy:
         if args.hours:
-            sys.exit("loglens: --hours and --since-deploy can't be combined")
+            sys.exit("logsite: --hours and --since-deploy can't be combined")
         return _deploy_spikes(args, cfg, backend, sites)
     if args.base or args.deployed_at:
-        sys.exit("loglens: --base and --deployed-at need --since-deploy")
+        sys.exit("logsite: --base and --deployed-at need --since-deploy")
     current = TimeRange.last(hours)
     now = backend.count_by_line(sites, current)
     before = backend.count_by_line(sites, current.previous())
@@ -418,7 +418,7 @@ def _deploy_spikes(args: argparse.Namespace, cfg: Config, backend, sites) -> int
         deploy = resolve_deploy(cfg.root, args.since_deploy, at=at, base=args.base)
         report = compare_deploy(cfg.root, sites, backend, deploy, cfg.lint, commits=args.commits)
     except ValueError as exc:
-        sys.exit(f"loglens: {exc}")
+        sys.exit(f"logsite: {exc}")
     hours = (report.after.end - report.after.start).total_seconds() / 3600
     release = f"{deploy.base}..{deploy.ref}" if deploy.base else f"{deploy.ref} (no earlier tag)"
     print(
@@ -447,7 +447,7 @@ def cmd_history(args: argparse.Namespace, cfg: Config) -> int:
     try:
         path, line = parse_target(args.target, cfg.root)
     except ValueError as exc:
-        sys.exit(f"loglens: {exc}")
+        sys.exit(f"logsite: {exc}")
     commits = site_history(cfg.root, path, line, max_count=args.max)
     for c in commits:
         print(c.format())
@@ -468,7 +468,7 @@ def cmd_serve(args: argparse.Namespace, cfg: Config) -> int:
     try:
         from .server import serve
     except ImportError:
-        sys.exit("loglens: the language server needs extra deps: pip install 'loglens[lsp]'")
+        sys.exit("logsite: the language server needs extra deps: pip install 'logsite[lsp]'")
     serve()
     return 0
 
@@ -477,15 +477,15 @@ def cmd_mcp(args: argparse.Namespace, cfg: Config) -> int:
     try:
         from .mcp_server import serve
     except ImportError:
-        sys.exit("loglens: the MCP server needs extra deps: pip install 'loglens[mcp]'")
+        sys.exit("logsite: the MCP server needs extra deps: pip install 'logsite[mcp]'")
     serve(cfg)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="loglens", description=__doc__)
-    parser.add_argument("--version", action="version", version=f"loglens {__version__}")
-    parser.add_argument("--config-dir", help="directory to search for loglens.toml")
+    parser = argparse.ArgumentParser(prog="logsite", description=__doc__)
+    parser.add_argument("--version", action="version", version=f"logsite {__version__}")
+    parser.add_argument("--config-dir", help="directory to search for logsite.toml")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("index", help="list every log call in the project")
@@ -579,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(args.config_dir)
     except ValueError as exc:
-        sys.exit(f"loglens: bad config: {exc}")
+        sys.exit(f"logsite: bad config: {exc}")
     return args.func(args, cfg)
 
 
