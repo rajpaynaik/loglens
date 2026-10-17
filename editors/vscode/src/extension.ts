@@ -7,6 +7,8 @@ const INSTALL = 'pip install "logsite[lsp]"';
 
 let client: LanguageClient | undefined;
 let output: vscode.OutputChannel;
+let python: string | undefined; // the interpreter the running server was found through
+let queue: Promise<void> = Promise.resolve(); // starts and restarts, one at a time
 
 /** Resolves to true if `command args...` exits 0 within a few seconds. */
 function runs(command: string, args: string[]): Promise<boolean> {
@@ -81,7 +83,9 @@ async function notFound(python?: string): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  const { server, python } = await findServer();
+  const found = await findServer();
+  python = found.python;
+  const server = found.server;
   if (!server) {
     await notFound(python);
     return;
@@ -106,10 +110,20 @@ async function start(): Promise<void> {
   }
 }
 
-async function restart(): Promise<void> {
-  await client?.stop();
-  client = undefined;
-  await start();
+/**
+ * Stop the running server (if any) and start again. Queued, so events that arrive while a
+ * server is starting (the Python extension fires several at startup) never start a second one.
+ */
+function restart(): Promise<void> {
+  queue = queue
+    .then(async () => {
+      const old = client;
+      client = undefined;
+      await old?.stop();
+      await start();
+    })
+    .catch((err) => output.appendLine(`Restart failed: ${err}`));
+  return queue;
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -127,14 +141,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     // Restart when the user picks another interpreter, e.g. after "Select interpreter".
     const envs = (await pythonApi())?.environments;
-    const sub = envs?.onDidChangeActiveEnvironmentPath?.(() => void restart());
+    const sub = envs?.onDidChangeActiveEnvironmentPath?.(async () => {
+      if ((await selectedPython(vscode.workspace.workspaceFolders?.[0]?.uri)) !== python) {
+        void restart();
+      }
+    });
     if (sub) {
       context.subscriptions.push(sub);
     }
   } catch (err) {
     output.appendLine(`Couldn't watch the Python interpreter: ${err}`);
   }
-  await start();
+  await restart();
 }
 
 export async function deactivate(): Promise<void> {
